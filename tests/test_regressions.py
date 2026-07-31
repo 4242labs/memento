@@ -37,7 +37,7 @@ from memento import (
     run_drain,
 )
 from memento.events import EventLog
-from memento.forgetting import document_revisions
+from memento.forgetting import document_revisions, rollback_document
 from memento.writepath import UNCHECKED, facts_fingerprint, read_facts
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -864,16 +864,17 @@ def test_the_prefix_trims_rather_than_dropping_a_whole_section(store):
     assert Merging().count(result.text) <= 9
 
 
-def test_an_abandoned_revision_is_admitted_to_in_the_log(store, adapter, monkeypatch):
+def test_an_abandoned_revision_is_retired_by_its_own_event(store, monkeypatch):
     """A crash between the event and the file swap leaves a revision that never happened.
 
-    The redrive's event then records a prior that does not match its predecessor's new content —
-    a chain whose links do not meet. The log is the audit history, so the break is recorded rather
-    than left to be inferred.
+    Retiring it inline on the *successor* was the half-measure: a reader that did not know to look
+    for that key still saw a chain whose links did not meet, and rollback still offered a version
+    the document never held. Supersession is an event everywhere else in this store; it is one here.
     """
-    store.replace_document("profile.md", "v1\n", session="s0", batch="b0")
-
     import memento.store as store_mod
+    from memento.events import EVENT_DOCUMENT_WRITE_ABANDONED
+
+    store.replace_document("profile.md", "v1\n", session="s0", batch="b0")
 
     real = store_mod._atomic_write_text
     monkeypatch.setattr(
@@ -883,8 +884,60 @@ def test_an_abandoned_revision_is_admitted_to_in_the_log(store, adapter, monkeyp
         store.replace_document("profile.md", "v2\n", session="s1", batch="b1")
     monkeypatch.setattr(store_mod, "_atomic_write_text", real)
 
+    assert store.read_document("profile.md") == "v1\n"  # the swap never landed
+
     store.replace_document("profile.md", "v2 reworded\n", session="s1", batch="b1")
 
-    revisions = document_revisions(store, "profile.md")
-    assert revisions[-1].abandoned_predecessor is not None
-    assert store.read_document("profile.md") == "v2 reworded\n"
+    log = store.document_log().read()
+    retirements = [e for e in log if e.event == EVENT_DOCUMENT_WRITE_ABANDONED]
+    assert len(retirements) == 1
+    assert retirements[0].payload["document"] == "profile.md"
+
+    # The chain now reads correctly to something that knows only the event kinds.
+    live = document_revisions(store, "profile.md")
+    assert [r.event.payload["prior_sha256"] for r in live][1:] == [
+        r.event.payload["new_sha256"] for r in live
+    ][:-1]
+
+    # The abandoned revision is kept — nothing is deleted — but it is not a rollback target,
+    # because it describes a state the document never held.
+    assert [r.abandoned for r in live] == [False, False]
+    everything = document_revisions(store, "profile.md", include_abandoned=True)
+    assert [r.abandoned for r in everything] == [False, True, False]
+
+    rollback_document(store, "profile.md", session="s2", batch="b2")
+    assert store.read_document("profile.md") == "v1\n"  # the version that really existed
+
+
+def test_facts_that_nest_too_deep_fail_closed_instead_of_blowing_the_stack(store, adapter):
+    """An unbounded walk turned a deep proposal into `RecursionError` — not a `MementoError`, so no
+    caller could catch it as one, and the drain's handler turned it into a permanent deferral."""
+    from memento.gates import MAX_FACTS_DEPTH
+
+    deep: dict = {}
+    node = deep
+    for _ in range(MAX_FACTS_DEPTH + 50):
+        node["k"] = {}
+        node = node["k"]
+
+    with pytest.raises(GateFailure, match="nests deeper"):
+        apply_consolidation(
+            store, adapter, Proposal(facts=deep), session="s1", batch="b1",
+            expected_fingerprint=UNCHECKED,
+        )
+    assert read_facts(store) == {}  # and it never reaches disk, so nothing is locked afterwards
+
+
+def test_a_tree_at_the_depth_limit_is_still_accepted(store, adapter):
+    from memento.gates import MAX_FACTS_DEPTH
+
+    deep: dict = {}
+    node = deep
+    for _ in range(MAX_FACTS_DEPTH - 2):
+        node["k"] = {}
+        node = node["k"]
+
+    assert apply_consolidation(
+        store, adapter, Proposal(facts=deep), session="s1", batch="b1",
+        expected_fingerprint=UNCHECKED,
+    ).ok

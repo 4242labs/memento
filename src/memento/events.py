@@ -38,6 +38,10 @@ EVENT_SUPERSEDED_BY = "superseded_by"
 EVENT_RETIRED = "retired"
 EVENT_CONTRADICTED = "contradicted"
 EVENT_DOCUMENT_REPLACED = "document_replaced"
+#: Retires a `document_replaced` event whose file swap never landed. Supersession is an event here
+#: as it is everywhere else in the store — an inline note on the successor would leave the abandoned
+#: revision looking real to anything that did not know to check for the note.
+EVENT_DOCUMENT_WRITE_ABANDONED = "document_write_abandoned"
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,12 @@ from typing import Any, Iterable, Iterator, Sequence
 
 from .clock import DEFAULT_CLOCK, Clock
 from .errors import CorruptStoreError, MementoError, SchemaVersionError, SecretsDetected
-from .events import EVENT_DOCUMENT_REPLACED, Event, EventLog
+from .events import (
+    EVENT_DOCUMENT_REPLACED,
+    EVENT_DOCUMENT_WRITE_ABANDONED,
+    Event,
+    EventLog,
+)
 from .fold import FoldedEntry, fold
 from .ids import validate_session_id
 from .secrets import scan_many
@@ -194,12 +199,22 @@ class MemoryStore:
     def document_log(self) -> EventLog:
         return self.log(DOCUMENT_STREAM)
 
-    def document_history(self, name: str) -> list[Event]:
+    def document_history(self, name: str, *, include_abandoned: bool = False) -> list[Event]:
+        """The recorded revisions of a document, oldest first.
+
+        Revisions retired by a `document_write_abandoned` event are excluded by default: they
+        describe a state the document never held, and leaving them in means the chain a reader sees
+        does not join up — `prior_sha256` of one revision failing to match `new_sha256` of the last.
+        They remain in the log, like everything else this store retires.
+        """
         name = _document_name(name)
+        retired = set() if include_abandoned else self.abandoned_batches(name)
         return [
             e
             for e in self.document_log().read()
-            if e.event == EVENT_DOCUMENT_REPLACED and e.payload.get("document") == name
+            if e.event == EVENT_DOCUMENT_REPLACED
+            and e.payload.get("document") == name
+            and e.batch not in retired
         ]
 
     def replace_documents(
@@ -241,7 +256,9 @@ class MemoryStore:
         if prior_batch:
             return self._replay_replace(prior_batch, names, writes)
 
-        history = [e for e in log.read() if e.event == EVENT_DOCUMENT_REPLACED]
+        recorded = log.read()
+        history = [e for e in recorded if e.event == EVENT_DOCUMENT_REPLACED]
+        abandoned: list[dict[str, Any]] = []
         payloads = []
         for name, write in zip(names, writes):
             path = self.document_path(name)
@@ -254,14 +271,27 @@ class MemoryStore:
                 "prior_sha256": prior_sha,
             }
             previous = next(
-                (e for e in reversed(history) if e.payload.get("document") == name), None
+                (
+                    e
+                    for e in reversed(history)
+                    if e.payload.get("document") == name and not self._is_abandoned(e, history)
+                ),
+                None,
             )
             if previous is not None and previous.payload.get("new_sha256") != prior_sha:
                 # The previous revision was recorded and then abandoned — a crash between the event
-                # and the file swap, followed by a redrive with different output. Say so, rather
-                # than leaving a chain whose links quietly do not meet: the log is the audit history,
-                # and a gap it does not admit to is worse than one it does.
-                payload["supersedes_abandoned"] = previous.batch
+                # and the file swap, followed by a redrive with different output. Retire it with its
+                # own event, the way every other supersession in this store is recorded, so the
+                # chain reads correctly to a reader that knows only the event kinds.
+                abandoned.append(
+                    {
+                        "event": EVENT_DOCUMENT_WRITE_ABANDONED,
+                        "document": name,
+                        "abandoned_batch": previous.batch,
+                        "abandoned_sha256": previous.payload.get("new_sha256"),
+                        "reason": "recorded but never written; superseded by a redrive",
+                    }
+                )
             if prior is None:
                 payload["prior_content"] = None
             elif len(prior.encode("utf-8")) <= self.inline_limit:
@@ -270,6 +300,12 @@ class MemoryStore:
                 payload["prior_ref"] = self._put_object(prior)
             payloads.append(payload)
 
+        if abandoned:
+            # Written first and in its own batch: the retirement is true the moment it is observed,
+            # and stays true whether or not the replace below completes.
+            log.append_batch(
+                abandoned, session=session, batch=f"{write_batch}-abandoned", turn=turn
+            )
         events = log.append_batch(payloads, session=session, batch=write_batch, turn=turn)
         for name, write in zip(names, writes):
             _atomic_write_text(self.document_path(name), write.content)
@@ -322,6 +358,26 @@ class MemoryStore:
                 _atomic_write_text(path, write.content)  # finish the interrupted replace
             results.append(ReplaceResult(document=name, event=ev, replayed=True))
         return results
+
+    @staticmethod
+    def _is_abandoned(event: Event, history: Sequence[Event]) -> bool:
+        return any(
+            e.event == EVENT_DOCUMENT_WRITE_ABANDONED
+            and e.payload.get("abandoned_batch") == event.batch
+            and e.payload.get("document") == event.payload.get("document")
+            for e in history
+        )
+
+    def abandoned_batches(self, name: str) -> set[str]:
+        """Batches whose recorded replace of `name` never reached the file."""
+        name = _document_name(name)
+        return {
+            e.payload["abandoned_batch"]
+            for e in self.document_log().read()
+            if e.event == EVENT_DOCUMENT_WRITE_ABANDONED
+            and e.payload.get("document") == name
+            and e.payload.get("abandoned_batch")
+        }
 
     def prior_content(self, event: Event) -> str | None:
         """The content a `document_replaced` event superseded, inline or from the object area."""

@@ -163,19 +163,30 @@ class Revision:
     event: Event
     ordinal_in_history: int
     has_prior: bool
-
-    @property
-    def abandoned_predecessor(self) -> str | None:
-        """The batch of a recorded-then-abandoned revision this one supersedes, if any."""
-        return self.event.payload.get("supersedes_abandoned")
+    abandoned: bool = False
+    """True when this revision was recorded and then never written — a crash between the event and
+    the file swap. It is kept, like every retired thing in this store, and skipped by rollback."""
 
 
-def document_revisions(store: MemoryStore, name: str) -> list[Revision]:
-    history = store.document_history(name)
+def document_revisions(store: MemoryStore, name: str, *, include_abandoned: bool = False) -> list[Revision]:
+    """Every recorded revision of a document, newest last.
+
+    Abandoned revisions are hidden by default: they describe a state the document never actually
+    held, so offering them as rollback targets would restore a version that never existed.
+    """
+    abandoned = store.abandoned_batches(name)
     out = []
-    for i, ev in enumerate(history):
+    for i, ev in enumerate(store.document_history(name, include_abandoned=True)):
         has_prior = ev.payload.get("prior_content") is not None or "prior_ref" in ev.payload
-        out.append(Revision(event=ev, ordinal_in_history=i, has_prior=has_prior))
+        revision = Revision(
+            event=ev,
+            ordinal_in_history=i,
+            has_prior=has_prior,
+            abandoned=ev.batch in abandoned,
+        )
+        if revision.abandoned and not include_abandoned:
+            continue
+        out.append(revision)
     return out
 
 

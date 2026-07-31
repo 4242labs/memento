@@ -72,6 +72,14 @@ log**. Gates cannot check prose. So an adapter works in two representations:
 
 A consolidation proposes `facts`; the engine renders and writes both, atomically, in one batch.
 
+Facts nest at most 64 levels deep. Past that the write is refused rather than recursing — put the
+detail in an event stream instead, which is what streams are for.
+
+A crash between the `document_replaced` event and the file swap leaves a revision that was recorded
+and never written. The redrive retires it with a `document_write_abandoned` event, so
+`document_history` and `document_revisions` chain correctly and rollback never offers a version the
+document did not hold. Pass `include_abandoned=True` to see the retired ones; nothing is deleted.
+
 `render_documents` must be a **pure function of facts** and **deterministic** — same facts, same
 bytes. Sort your collections. A renderer that reorders rows between runs produces a
 `document_replaced` event on every consolidation and makes the history unreadable.

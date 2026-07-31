@@ -82,15 +82,15 @@ def cmd_facts(args: argparse.Namespace) -> int:
 
 def cmd_history(args: argparse.Namespace) -> int:
     store = MemoryStore(args.store)
-    revisions = document_revisions(store, args.document)
+    revisions = document_revisions(store, args.document, include_abandoned=True)
     if not revisions:
         print(f"no recorded revisions for {args.document}")
         return 0
     for rev in revisions:
         ev = rev.event
         marker = "" if rev.has_prior else "  (no prior content — rollback unavailable)"
-        if rev.abandoned_predecessor:
-            marker += f"  (supersedes abandoned {rev.abandoned_predecessor})"
+        if rev.abandoned:
+            marker += "  (abandoned — recorded but never written)"
         print(f"[{rev.ordinal_in_history}] {ev.ts}  session={ev.session}  batch={ev.batch}{marker}")
     return 0
 
