@@ -1,0 +1,12 @@
+# Stores are never tracked. Root-anchored on purpose (ADR D1): a bare `memory/`
+# would also untrack source packages named `memory` at any depth.
+/memory/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+.DS_Store

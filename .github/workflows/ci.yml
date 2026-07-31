@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    # The deterministic tier (ADR D6). No live model, no credentials, no token spend — which is
+    # exactly why it is allowed to gate.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra dev --python ${{ matrix.python }}
+
+      - name: Deterministic tier
+        run: uv run --python ${{ matrix.python }} pytest
+
+      - name: Template pins match what is on disk
+        run: uv run --python ${{ matrix.python }} python -m memento.templates --check
+
+  secrets:
+    # Public repo. Synthetic fixtures only, and this is what keeps that true.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # Pinned deliberately: a scanner that changes under us changes what CI means.
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          chmod +x gitleaks
+
+      - name: Scan history
+        run: ./gitleaks detect --config .gitleaks.toml --redact --no-banner --exit-code 1
+
+  no-store-committed:
+    # A store is data, never code. If one ever lands in this repo, it lands in public.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse a committed store
+        run: |
+          if git ls-files | grep -E '(^|/)memory/|(^|/)\.memento/' ; then
+            echo "::error::a memory store appears to be tracked in this repo"
+            exit 1
+          fi
+          echo "no store tracked"
