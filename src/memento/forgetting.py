@@ -19,7 +19,8 @@ from typing import Any, Sequence
 
 from .errors import MementoError
 from .events import EVENT_CONTRADICTED, EVENT_RETIRED, Event
-from .gates import DEFAULT_IDENTITY_KEYS, Proposal, get, member_key, parse_declared
+from .gates import DEFAULT_IDENTITY_KEYS, Proposal, get, member_key, split_marker
+from .locking import StoreLock
 from .store import MemoryStore
 from .writepath import TOMBSTONE_STREAM, apply_consolidation, facts_fingerprint, read_facts
 
@@ -33,7 +34,8 @@ def tombstone(
     reason: str = "operator forget",
 ) -> list[Event]:
     """Record a tombstone marker. Honored by every future fold, gate, and consolidation."""
-    return store.append(
+    with StoreLock.for_store(store.locks_dir).hold():
+        return store.append(
         TOMBSTONE_STREAM,
         [{"id": marker, "event": EVENT_RETIRED, "reason": reason}],
         session=session,
@@ -51,12 +53,13 @@ def retire_entry(
     reason: str = "operator forget",
 ) -> list[Event]:
     """Retire one event-log entry, and record the matching tombstone marker."""
-    events = store.append(
-        stream,
-        [{"id": entry_id, "event": EVENT_RETIRED, "reason": reason}],
-        session=session,
-        batch=batch,
-    )
+    with StoreLock.for_store(store.locks_dir).hold():
+        events = store.append(
+            stream,
+            [{"id": entry_id, "event": EVENT_RETIRED, "reason": reason}],
+            session=session,
+            batch=batch,
+        )
     tombstone(store, f"{stream}/{entry_id}", session=session, batch=f"{batch}-tombstone", reason=reason)
     return events
 
@@ -75,12 +78,13 @@ def note_contradiction(
     The fold flags the entry `contested`; correcting it is the next consolidation's job, not this
     call's — nothing is rewritten here.
     """
-    return store.append(
-        stream,
-        [{"id": entry_id, "event": EVENT_CONTRADICTED, "note": note}],
-        session=session,
-        batch=batch,
-    )
+    with StoreLock.for_store(store.locks_dir).hold():
+        return store.append(
+            stream,
+            [{"id": entry_id, "event": EVENT_CONTRADICTED, "note": note}],
+            session=session,
+            batch=batch,
+        )
 
 
 def drop_member(
@@ -96,9 +100,9 @@ def drop_member(
     does there.
     """
     out = copy.deepcopy(facts)
-    path_str, _, key = marker.rpartition("/")
+    parents, key = split_marker(marker)
     node: Any = out
-    for part in parse_declared(path_str):
+    for part in parents:
         found, node = get(node, (part,), identity_keys)
         if not found:
             raise MementoError(f"no such facts path: {marker}")
@@ -133,18 +137,22 @@ def forget_fact(
     point: the gates that refuse an LLM's unexplained deletion accept this one *because* the
     tombstone exists, rather than because the caller was trusted.
     """
-    tombstone(store, marker, session=session, batch=f"{batch}-tombstone", reason=reason)
-    current = read_facts(store, adapter)
-    facts = drop_member(current, marker, getattr(adapter, "identity_keys", DEFAULT_IDENTITY_KEYS))
-    proposal = Proposal(facts=facts, tombstones={marker})
-    return apply_consolidation(
-        store,
-        adapter,
-        proposal,
-        session=session,
-        batch=batch,
-        expected_fingerprint=facts_fingerprint(current),
-    )
+    lock = StoreLock.for_store(store.locks_dir)
+    with lock.hold():  # the tombstone and the re-render are one operation, not two
+        tombstone(store, marker, session=session, batch=f"{batch}-tombstone", reason=reason)
+        current = read_facts(store, adapter)
+        facts = drop_member(
+            current, marker, getattr(adapter, "identity_keys", DEFAULT_IDENTITY_KEYS)
+        )
+        return apply_consolidation(
+            store,
+            adapter,
+            Proposal(facts=facts, tombstones={marker}),
+            session=session,
+            batch=batch,
+            lock=lock,
+            expected_fingerprint=facts_fingerprint(current),
+        )
 
 
 # ------------------------------------------------------------------ rollback
@@ -155,6 +163,11 @@ class Revision:
     event: Event
     ordinal_in_history: int
     has_prior: bool
+
+    @property
+    def abandoned_predecessor(self) -> str | None:
+        """The batch of a recorded-then-abandoned revision this one supersedes, if any."""
+        return self.event.payload.get("supersedes_abandoned")
 
 
 def document_revisions(store: MemoryStore, name: str) -> list[Revision]:
@@ -190,7 +203,10 @@ def rollback_document(
     prior = store.prior_content(chosen.event)
     if prior is None:
         raise MementoError(f"revision {revision} of {name!r} has no prior content to restore")
-    store.replace_document(name, prior, session=session, batch=batch)
+    # Not re-scanned for secrets: this content is already in the store and in the event log, and
+    # rollback is the operator's only recovery lever. Refusing to restore an adopted document that
+    # happens to trip a pattern would make the lever useless exactly when it is needed.
+    store.replace_document(name, prior, session=session, batch=batch, scan_secrets=False)
     return prior
 
 

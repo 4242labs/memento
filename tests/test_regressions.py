@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import threading
 
 import pytest
@@ -18,6 +19,7 @@ import pytest
 from conftest import StubDistiller, base_facts, make_adapter
 from memento import (
     Adapter,
+    LockTimeout,
     CorruptStoreError,
     GateFailure,
     MementoError,
@@ -35,6 +37,7 @@ from memento import (
     run_drain,
 )
 from memento.events import EventLog
+from memento.forgetting import document_revisions
 from memento.writepath import UNCHECKED, facts_fingerprint, read_facts
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
@@ -343,47 +346,67 @@ def test_a_session_log_is_gated(store):
 # ================================================== M3 — StoreLock across threads
 
 
-def test_the_lock_depth_cannot_underflow(store):
-    """It used to reach -1, and -1 is truthy: the lock became a permanent no-op."""
+def test_a_second_thread_cannot_enter_while_the_first_holds(store):
+    """Forced interleaving, on purpose.
+
+    An unsynchronised race passes against the *broken* lock too — four threads all clear the depth
+    check before the first one sets it — so the earlier version of this test proved nothing. Here
+    the contender does not start until the holder is provably inside.
+    """
     lock = StoreLock(store.locks_dir, timeout=0.3)
-    for _ in range(3):
-        try:
-            with lock.hold(timeout=0.3):
-                pass
-        except Exception:  # pragma: no cover - defensive
-            pass
-    assert lock._depth == 0
+    holder_inside = threading.Event()
+    outcome: list[str] = []
 
-    with lock.hold():
-        assert lock._fd is not None  # still really taking the flock
-
-
-def test_two_threads_are_never_inside_the_critical_section_at_once(store):
-    lock = StoreLock(store.locks_dir, timeout=2.0)
-    inside: list[str] = []
-    overlaps: list[bool] = []
-
-    def worker(name):
+    def holder():
         with lock.hold():
-            overlaps.append(len(inside) > 0)
-            inside.append(name)
-            threading.Event().wait(0.05)
-            inside.remove(name)
+            holder_inside.set()
+            threading.Event().wait(0.4)
 
-    threads = [threading.Thread(target=worker, args=(f"t{i}",)) for i in range(4)]
+    def contender():
+        assert holder_inside.wait(timeout=5)
+        try:
+            with lock.hold(timeout=0.15):
+                outcome.append("entered")  # the broken lock lands here
+        except LockTimeout:
+            outcome.append("blocked")
+
+    threads = [threading.Thread(target=holder), threading.Thread(target=contender)]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=10)
 
-    assert overlaps == [False, False, False, False]
+    assert outcome == ["blocked"]
+    assert not lock.held  # and the state did not underflow on the way out
+
+
+def test_a_forked_child_does_not_inherit_the_lock(store):
+    """A child forked mid-hold used to skip the flock entirely and write inside the parent's
+    critical section, because it inherited a depth of 1."""
+    lock = StoreLock(store.locks_dir, timeout=0.3)
+    read_fd, write_fd = os.pipe()
+
+    with lock.hold():
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process
+            os._exit(0 if not StoreLock(store.locks_dir, timeout=0.2).held else 3)
+        os.close(write_fd)
+        _, status = os.waitpid(pid, 0)
+
+    os.close(read_fd)
+    assert os.WEXITSTATUS(status) == 0
 
 
 # ================================================== M7 — a replayed batch is not a silent drop
 
 
-def test_reusing_a_batch_id_for_different_entries_is_refused(store, adapter):
-    """It used to discard the new entries and report `ok=True`, streams and all."""
+def test_a_redrive_with_different_entries_keeps_both_rather_than_wedging(store, adapter):
+    """Three behaviours have stood here, and only the third is right.
+
+    Dropping the new entries and reporting success lost half a consolidation. Raising instead
+    wedged the session forever, because a drain keys its batch on the session id and every redrive
+    hit the same error — a worse failure than the loss it replaced. Both land now.
+    """
     facts = base_facts()
     apply_consolidation(
         store,
@@ -394,18 +417,19 @@ def test_reusing_a_batch_id_for_different_entries_is_refused(store, adapter):
         expected_fingerprint=UNCHECKED,
     )
 
-    with pytest.raises(MementoError, match="already recorded with different entries"):
-        apply_consolidation(
-            store,
-            adapter,
-            Proposal(
-                facts=copy.deepcopy(facts),
-                entries={"errors/fr": [{"id": "fr-deux-erreur", "pattern": "deux erreur"}]},
-            ),
-            session="s1",
-            batch="b1",
-            expected_fingerprint=UNCHECKED,
-        )
+    apply_consolidation(
+        store,
+        adapter,
+        Proposal(
+            facts=copy.deepcopy(facts),
+            entries={"errors/fr": [{"id": "fr-deux-erreur", "pattern": "deux erreur"}]},
+        ),
+        session="s1",
+        batch="b1",
+        expected_fingerprint=UNCHECKED,
+    )
+
+    assert set(store.folded("errors/fr")) == {"fr-un-erreur", "fr-deux-erreur"}
 
 
 def test_replaying_the_identical_batch_is_still_a_no_op(store, adapter):
@@ -506,12 +530,19 @@ def test_non_utf8_bytes_raise_something_callers_can_catch(tmp_path):
 
 
 def test_a_symlink_out_of_the_store_is_not_listed_as_a_stream(store, tmp_path):
+    """A symlinked *file*, deliberately.
+
+    The first version of this test linked a directory, which `rglob` does not descend into on any
+    supported Python — so it passed before the filter existed and proved nothing. A symlinked file
+    is yielded, and is the case the filter actually has to catch.
+    """
     outside = tmp_path / "other-store"
     outside.mkdir()
-    (outside / "x.jsonl").write_text("", encoding="utf-8")
-    (store.root / "link").symlink_to(outside, target_is_directory=True)
+    (outside / "x.jsonl").write_text('{"id":"a","event":"entry"}\n', encoding="utf-8")
+    (store.root / "borrowed.jsonl").symlink_to(outside / "x.jsonl")
 
-    assert "link/x" not in store.streams()
+    assert (store.root / "borrowed.jsonl").exists()  # the bait is really there
+    assert "borrowed" not in store.streams()
 
 
 # ================================================== m3 — a non-additive counter
@@ -609,3 +640,251 @@ def test_two_writers_from_one_snapshot_cannot_both_land(store, adapter):
         )
 
     assert read_facts(store)["languages"]["fr"]["goals"] == "A's freshly learned goal"
+
+
+# ============================================ round two — regressions in the fixes
+
+
+def test_a_drain_redrive_with_entries_is_not_a_dead_end(store, adapter, queue, clock):
+    """The worst regression the fixes introduced.
+
+    A drain keys its batch on the session id, so every redrive of a session that had entries hit
+    the same "already recorded with different entries" error and deferred again. The session could
+    never consolidate — a permanent wedge in place of the silent drop it replaced.
+    """
+    queue.close_and_enqueue("s1")
+
+    first = Proposal(
+        facts=base_facts(), entries={"errors/fr": [{"id": "fr-un-erreur", "pattern": "un erreur"}]}
+    )
+    import memento.store as store_mod
+
+    real = store_mod._atomic_write_text
+    armed = {"yes": True}
+
+    def crash_once(path, content):
+        if armed["yes"]:
+            armed["yes"] = False
+            raise RuntimeError("power cut")
+        return real(path, content)
+
+    store_mod._atomic_write_text = crash_once
+    try:
+        run_drain(store, adapter, StubDistiller(proposal=first), queue, clock=clock, do_push=False)
+    finally:
+        store_mod._atomic_write_text = real
+
+    assert not queue.is_consolidated("s1")
+
+    second = copy.deepcopy(base_facts())
+    second["languages"]["fr"]["goals"] = "reworded by the re-run model"
+    report = run_drain(
+        store,
+        adapter,
+        StubDistiller(
+            proposal=Proposal(
+                facts=second,
+                entries={"errors/fr": [{"id": "fr-deux-erreur", "pattern": "deux erreur"}]},
+            )
+        ),
+        queue,
+        clock=clock,
+        do_push=False,
+    )
+
+    assert report.consolidated == ["s1"]
+    assert queue.is_consolidated("s1")
+
+
+def test_a_byte_identical_replay_survives_a_json_round_trip(store):
+    """`same_content_as` compared live objects to round-tripped ones, so a tuple, a non-string dict
+    key, or a NaN turned crash recovery into a hard error."""
+    entries = [{"id": "e1", "tags": ("a", "b"), "counts": {1: "x"}}]
+    store.append("vocab/fr", entries, session="s1", batch="b1", )
+    store.append("vocab/fr", copy.deepcopy(entries), session="s1", batch="b1")
+
+    assert len(store.log("vocab/fr").read()) == 1
+
+
+def test_a_dotted_key_cannot_borrow_another_paths_tombstone():
+    """`("a.b", "c")` and `("a", "b", "c")` used to render the same marker, so one tombstone
+    authorised a deletion at a path the operator never named."""
+    from memento.gates import path_marker
+
+    dotted = path_marker(("a.b", "c"))
+    nested = path_marker(("a", "b", "c"))
+    assert dotted != nested
+
+    current = {"a.b": {"c": "one"}, "a": {"b": {"c": "two"}}}
+    proposed = {"a.b": {}, "a": {"b": {}}}
+
+    violations = floor_violations(current, proposed, tombstones={dotted})
+
+    assert [v.path for v in violations] == [nested]  # only the one that was retired is allowed
+
+
+def test_unverifiable_facts_are_refused_on_the_way_in(store, adapter):
+    """They used to write cleanly to an empty store and then fail every later proposal — including
+    an exact no-op — which, with all-or-nothing writes, locked the store for good."""
+    facts = {"blob": [{"kind": "note"}]}  # no id/topic/name: the floor cannot address it
+
+    with pytest.raises(GateFailure, match="cannot be stored"):
+        apply_consolidation(
+            store, adapter, Proposal(facts=facts), session="s1", batch="b1",
+            expected_fingerprint=UNCHECKED,
+        )
+    assert read_facts(store) == {}
+
+
+def test_widening_identity_keys_cannot_blind_the_floor(store):
+    """An adapter's extra keys are searched *after* the engine's, never before."""
+    adapter = Adapter(name="wide", identity_keys=("engagement", "id", "topic", "name"))
+    current = {"interests": [{"topic": "lighthouses", "engagement": "low"}]}
+    apply_consolidation(
+        store, adapter, Proposal(facts=current), session="s1", batch="b1",
+        expected_fingerprint=UNCHECKED,
+    )
+
+    swapped = {"interests": [{"topic": "crocheting", "engagement": "low"}]}
+    with pytest.raises(GateFailure, match="interests/lighthouses"):
+        apply_consolidation(
+            store, adapter, Proposal(facts=swapped), session="s2", batch="b2",
+            expected_fingerprint=UNCHECKED,
+        )
+
+
+def test_a_failing_backup_commit_does_not_strand_the_drain(store, adapter, queue, clock):
+    from memento import backup as backup_mod
+
+    backup_mod.enable_backup(store, acknowledged=True)
+    queue.close_and_enqueue("s1")
+    queue.close_and_enqueue("s2")
+
+    real = backup_mod.commit_consolidation
+
+    def explode(*a, **kw):
+        raise RuntimeError("index.lock exists")
+
+    backup_mod.commit_consolidation = explode
+    try:
+        report = run_drain(
+            store, adapter, StubDistiller(proposal=Proposal(facts=base_facts())), queue,
+            clock=clock, do_push=False,
+        )
+    finally:
+        backup_mod.commit_consolidation = real
+
+    assert report.consolidated == ["s1", "s2"]  # both written, both marked
+    assert any(f.kind == "backup-failed" for f in report.flags)
+
+
+def test_a_credential_bearing_remote_is_refused_before_anything_is_configured(store):
+    from memento import BackupError, enable_backup
+
+    with pytest.raises(BackupError, match="inline credential"):
+        enable_backup(
+            store,
+            acknowledged=True,
+            remote="https://x-access-token:ghp_" + "a" * 36 + "@github.com/o/r.git",
+        )
+
+    assert not (store.root / ".git").exists()  # and not half-configured either
+
+
+def test_rollback_can_restore_content_that_trips_the_secrets_gate(store):
+    """An adopted document may hold anything. Rollback is the operator's only recovery lever, so
+    the gate must not be what takes it away."""
+    store.replace_document("profile.md", "ordinary\n", session="s1", batch="b1")
+    store.replace_document(
+        "profile.md", "AKIA" + "IOSFODNN7EXAMPLE" + "\n", session="s2", batch="b2",
+        scan_secrets=False,
+    )
+
+    from memento.forgetting import rollback_document
+
+    store.replace_document("profile.md", "later\n", session="s3", batch="b3")
+    rollback_document(store, "profile.md", session="s4", batch="b4")
+
+    assert "IOSFODNN7EXAMPLE" in store.read_document("profile.md")
+
+
+def test_a_legacy_claim_file_does_not_kill_the_drain(store, adapter, queue, clock):
+    """`stale_claims` rebuilt a session id from a filename and handed it to a validator that had
+    not existed when the file was written."""
+    store.locks_dir.mkdir(parents=True, exist_ok=True)
+    (store.locks_dir / "claim-2026-07-31T12:00:00.lock").write_text("{}", encoding="utf-8")
+    queue.close_and_enqueue("s1")
+
+    report = run_drain(
+        store, adapter, StubDistiller(proposal=Proposal(facts=base_facts())), queue,
+        clock=clock, do_push=False,
+    )
+    assert report.consolidated == ["s1"]
+
+
+def test_a_queue_inside_the_store_is_never_pushed(store, tmp_path):
+    """Wherever the consumer put it. The engine recognises its own queue by shape."""
+    from memento import Queue, backup as backup_mod
+
+    queue = Queue(store.root / "sessions-data")
+    queue.append_turn("s1", 1, {"said": "verbatim transcript material"})
+    backup_mod.enable_backup(store, acknowledged=True, queue_root=queue.root)
+    store.replace_document("profile.md", "something to commit\n", session="s1", batch="b1")
+    backup_mod.commit_consolidation(store, "s1")
+
+    tracked = backup_mod.git(store, "ls-files").stdout
+    assert "profile.md" in tracked
+    assert "sessions-data" not in tracked
+
+
+def test_the_prefix_trims_rather_than_dropping_a_whole_section(store):
+    """A one-token overflow used to cost an entire section, because the re-truncation allowance
+    ignored what the earlier parts had already spent."""
+
+    class Merging:
+        name = "merging"
+        is_local = True
+
+        def count(self, text: str) -> int:
+            return len(text) + (1 if "a\n\nb" in text else 0)
+
+    adapter = make_adapter(
+        token_counter=Merging(),
+        prefix_budget_tokens=9,
+        prefix_sections=(
+            PrefixSection(name="a", priority=0, render=lambda s: "aaaa"),
+            PrefixSection(name="b", priority=1, render=lambda s: "b\nb\nb"),
+        ),
+    )
+
+    result = assemble_prefix(store, adapter)
+
+    assert result.dropped == []
+    assert result.truncated == ["b"]
+    assert Merging().count(result.text) <= 9
+
+
+def test_an_abandoned_revision_is_admitted_to_in_the_log(store, adapter, monkeypatch):
+    """A crash between the event and the file swap leaves a revision that never happened.
+
+    The redrive's event then records a prior that does not match its predecessor's new content —
+    a chain whose links do not meet. The log is the audit history, so the break is recorded rather
+    than left to be inferred.
+    """
+    store.replace_document("profile.md", "v1\n", session="s0", batch="b0")
+
+    import memento.store as store_mod
+
+    real = store_mod._atomic_write_text
+    monkeypatch.setattr(
+        store_mod, "_atomic_write_text", lambda *a: (_ for _ in ()).throw(RuntimeError("cut"))
+    )
+    with pytest.raises(RuntimeError):
+        store.replace_document("profile.md", "v2\n", session="s1", batch="b1")
+    monkeypatch.setattr(store_mod, "_atomic_write_text", real)
+
+    store.replace_document("profile.md", "v2 reworded\n", session="s1", batch="b1")
+
+    revisions = document_revisions(store, "profile.md")
+    assert revisions[-1].abandoned_predecessor is not None
+    assert store.read_document("profile.md") == "v2 reworded\n"
