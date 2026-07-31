@@ -37,6 +37,11 @@ from .errors import GateFailure
 # declares its own; it may add to this set, never shrink below "something identifies each member".
 DEFAULT_IDENTITY_KEYS: tuple[str, ...] = ("id", "topic", "name")
 
+#: How deep a facts tree may nest. Beyond this the walk stops and reports, rather than recursing
+#: into a `RecursionError` — which is not a `MementoError`, so callers cannot catch it as one, and
+#: the drain would turn it into a permanent deferral.
+MAX_FACTS_DEPTH = 64
+
 Path = tuple[str, ...]
 
 
@@ -207,14 +212,26 @@ def membership(value: Any, identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS)
     return None
 
 
+class TooDeep(Exception):
+    """Raised through `walk` when a facts tree nests past `MAX_FACTS_DEPTH`."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(render_path(path))
+
+
 def walk(
     obj: Any, identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS, path: Path = ()
 ) -> Iterable[tuple[Path, Any]]:
     """Yield every (path, value) in a facts tree, addressing list members by identity.
 
     Descent stops at a collection the engine cannot address; the floor reports that node instead of
-    guessing its way further down.
+    guessing its way further down. Depth is bounded for the same reason — an unbounded walk turns a
+    deeply nested proposal into a `RecursionError`, which is not something a caller can catch as a
+    store error.
     """
+    if len(path) > MAX_FACTS_DEPTH:
+        raise TooDeep(path)
     yield path, obj
     view = membership(obj, identity_keys)
     if view is None or view.problem is not None:
@@ -462,20 +479,39 @@ class AntiErosionFloor:
         # Check what is being *written* first. Walking only the current state let an unverifiable
         # collection land on an empty store and then fail every later proposal — including an exact
         # no-op — which, with all-or-nothing writes, locked the store for good.
-        for path, value in walk(proposal.facts, self.identity_keys):
-            view = membership(value, self.identity_keys)
-            if view is not None and view.problem is not None:
-                out.append(
-                    Violation(
-                        self.name,
-                        render_path(path),
-                        f"cannot be stored: {view.problem}",
+        try:
+            for path, value in walk(proposal.facts, self.identity_keys):
+                view = membership(value, self.identity_keys)
+                if view is not None and view.problem is not None:
+                    out.append(
+                        Violation(
+                            self.name,
+                            render_path(path),
+                            f"cannot be stored: {view.problem}",
+                        )
                     )
+        except TooDeep as exc:
+            return [
+                Violation(
+                    self.name,
+                    render_path(exc.path),
+                    f"nests deeper than {MAX_FACTS_DEPTH} levels; flatten it or store it as an entry",
                 )
+            ]
         if out:
             return out
 
-        for path, value in walk(current.facts, self.identity_keys):
+        try:
+            current_nodes = list(walk(current.facts, self.identity_keys))
+        except TooDeep as exc:  # already on disk from an older build: report, do not crash
+            return [
+                Violation(
+                    self.name,
+                    render_path(exc.path),
+                    f"stored facts nest deeper than {MAX_FACTS_DEPTH} levels and cannot be verified",
+                )
+            ]
+        for path, value in current_nodes:
             if _covered(path, allowed):
                 continue  # this node, or something containing it, was explicitly retired
             where = render_path(path)
