@@ -236,9 +236,15 @@ def run_drain(
                 continue
 
             if backup_mod.is_enabled(store):
-                sha = backup_mod.commit_consolidation(store, session, lock=lock)
-                if sha:
-                    report.committed.append(sha)
+                # The whole of backup is best-effort. A failed commit must not strand a session
+                # that is already written, nor the sessions queued behind it — the store is the
+                # record, git is a copy of it.
+                try:
+                    sha = backup_mod.commit_consolidation(store, session, lock=lock)
+                    if sha:
+                        report.committed.append(sha)
+                except Exception as exc:
+                    sink.raise_flag(BACKUP_FAILED, f"backup commit failed: {exc}", session=session)
                 if do_push:
                     try:
                         backup_mod.push(store)  # outside the lock, on purpose

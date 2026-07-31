@@ -111,22 +111,25 @@ def assemble_prefix(
     while total > budget and parts:
         # Per-section accounting assumes the counter is additive across the separator. Real BPE
         # tokenizers merge across boundaries, so the assembled whole can exceed the sum of its
-        # parts. Trim from the least important end until the *measured* whole fits — the budget is
-        # a promise about what gets sent, not about the arithmetic used to predict it.
-        last = next(r for r in reversed(results) if r.tokens and not r.dropped)
-        kept, _ = _truncate_to_fit(parts[-1], counter, max(budget - counter.count(SEPARATOR), 0))
-        if kept and kept != parts[-1]:
-            parts[-1] = kept
+        # parts — and by an amount no per-section allowance can predict. So trim one line at a time
+        # off the least important end and re-measure the whole, which is the only number that is a
+        # promise. Computing an allowance instead meant any section that fit *alone* came back
+        # untrimmed and was dropped wholesale: a one-token overflow cost an entire section.
+        last = next((r for r in reversed(results) if r.tokens and not r.dropped), None)
+        lines = parts[-1].split("\n")
+        if last is not None and len(lines) > 1:
+            parts[-1] = "\n".join(lines[:-1]).rstrip()
             last.truncated = True
         else:
             parts.pop()
-            last.tokens = 0
-            last.truncated = False
-            last.dropped = True
-            if last.required:
-                raise BudgetError(
-                    f"required prefix section {last.name!r} does not fit in {budget} tokens"
-                )
+            if last is not None:
+                last.tokens = 0
+                last.truncated = False
+                last.dropped = True
+                if last.required:
+                    raise BudgetError(
+                        f"required prefix section {last.name!r} does not fit in {budget} tokens"
+                    )
         text = SEPARATOR.join(parts)
         total = counter.count(text)
 

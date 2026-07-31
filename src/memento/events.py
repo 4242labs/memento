@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -20,6 +20,13 @@ from .clock import DEFAULT_CLOCK, Clock
 from .errors import CorruptStoreError, MementoError
 
 ENVELOPE_KEYS = ("id", "event", "ts", "session", "turn", "batch", "ordinal")
+
+
+def _wire(event: "Event") -> str:
+    """An event exactly as it would be serialised, minus the timestamp. The comparison ground."""
+    obj = event.to_obj()
+    obj.pop("ts", None)
+    return json.dumps(obj, sort_keys=True, ensure_ascii=False, allow_nan=False, default=str)
 
 # Stand-in stamp for events written before the engine existed and missing envelope fields.
 LEGACY = "legacy"
@@ -62,13 +69,15 @@ class Event:
         return obj
 
     @classmethod
-    def from_obj(cls, obj: Mapping[str, Any], *, position: int = 0) -> "Event":
+    def from_obj(cls, obj: Any, *, position: int = 0) -> "Event":
         """Parse one on-disk event.
 
         Deliberately permissive about a missing envelope field: a log written before the engine
         existed is the compatibility target, and refusing to read it would turn adoption into a
         migration. Writes are strict; reads meet the store where it is.
         """
+        if not isinstance(obj, Mapping):
+            raise CorruptStoreError(f"event line is {type(obj).__name__}, not an object")
         payload = {k: v for k, v in obj.items() if k not in ENVELOPE_KEYS}
         try:
             ordinal = int(obj.get("ordinal", position))
@@ -86,14 +95,14 @@ class Event:
         )
 
     def same_content_as(self, other: "Event") -> bool:
-        """Identity for replay purposes. `ts` is excluded — a re-run legitimately restamps."""
-        return (
-            self.event == other.event
-            and self.id == other.id
-            and self.ordinal == other.ordinal
-            and self.turn == other.turn
-            and dict(self.payload) == dict(other.payload)
-        )
+        """Identity for replay purposes. `ts` is excluded — a re-run legitimately restamps.
+
+        Both sides are compared **as they would be on disk**. One side of this comparison has always
+        been through JSON and the other has not, so comparing live objects made a byte-identical
+        replay raise on anything whose round trip is not the identity: a tuple becomes a list, an
+        int dict key becomes a string, and NaN never equals itself.
+        """
+        return _wire(self) == _wire(other)
 
     @property
     def batch_key(self) -> tuple[str, str]:
@@ -139,6 +148,10 @@ class EventLog:
                 if trailing_partial and i == len(lines) - 1:
                     break  # torn tail from a crash mid-append: ignore, the batch will be replayed
                 raise CorruptStoreError(f"{self.path}: unparseable line {i + 1}") from exc
+            if not isinstance(obj, dict):
+                if trailing_partial and i == len(lines) - 1:
+                    break
+                raise CorruptStoreError(f"{self.path}: line {i + 1} is not an event object")
             events.append(Event.from_obj(obj, position=len(events)))
         return events
 
@@ -166,11 +179,13 @@ class EventLog:
         cut = raw.rfind(b"\n") + 1  # 0 when the file is a single line
         tail = raw[cut:]
         try:
-            json.loads(tail.decode("utf-8-sig").rstrip("\r"))
+            parsed = json.loads(tail.decode("utf-8-sig").rstrip("\r"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            keep = raw[:cut]  # torn: drop it
+            parsed = None
+        if isinstance(parsed, dict):
+            keep = raw + b"\n"  # a complete event, merely unterminated
         else:
-            keep = raw + b"\n"  # complete: terminate it
+            keep = raw[:cut]  # torn, or not an event at all: drop it
         with open(self.path, "r+b") as fh:
             fh.seek(0)
             fh.write(keep)
@@ -189,12 +204,14 @@ class EventLog:
     ) -> list[Event]:
         """Append a whole batch, or nothing.
 
-        Idempotent on `(session, batch)`: replaying a batch already on disk returns it and touches
-        nothing. Ordinals are assigned by position within the batch.
+        Idempotent on `(session, batch)` **and content**: replaying a batch already on disk returns
+        it and touches nothing. Ordinals are assigned by position within the batch.
 
-        Re-using a key for *different* entries is a caller bug, not a replay, and it raises — the
-        alternative is dropping the new entries and reporting success, which is how a consolidation
-        silently loses half of itself.
+        Different entries under the same key are a *redrive*, not a conflict — a drain keys its
+        batch on the session id, and a re-run model does not repeat itself byte for byte. They are
+        appended under a suffixed batch id (`b1#1`) so the earlier events stay put and the new ones
+        land. Dropping them silently would lose half a consolidation; raising would wedge the
+        session forever, which is worse than the loss it replaced.
         """
         stamp = ts or self.clock.now_iso()
         events: list[Event] = []
@@ -231,16 +248,24 @@ class EventLog:
         if not events:
             return []
 
-        already = [e for e in self.read() if e.batch_key == (session, batch)]
-        if already:
-            if len(already) != len(events) or not all(
-                a.same_content_as(b) for a, b in zip(already, events)
+        on_disk = self.read()
+        prefix = f"{batch}#"
+        groups: dict[str, list[Event]] = {}
+        for existing in on_disk:
+            if existing.session != session:
+                continue
+            if existing.batch == batch or existing.batch.startswith(prefix):
+                groups.setdefault(existing.batch, []).append(existing)
+
+        for recorded in groups.values():
+            if len(recorded) == len(events) and all(
+                a.same_content_as(b) for a, b in zip(recorded, events)
             ):
-                raise MementoError(
-                    f"{self.path}: batch ({session!r}, {batch!r}) is already recorded with "
-                    "different entries; use a new batch id rather than re-using this one"
-                )
-            return already
+                return recorded  # a replay: already durable, nothing to do
+
+        if groups:  # a redrive with different content: keep both, under a distinct batch id
+            batch = f"{batch}#{len(groups)}"
+            events = [replace(e, batch=batch) for e in events]
 
         blob = "".join(json.dumps(e.to_obj(), ensure_ascii=False) + "\n" for e in events)
         self.path.parent.mkdir(parents=True, exist_ok=True)

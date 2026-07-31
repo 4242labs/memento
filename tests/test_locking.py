@@ -13,20 +13,22 @@ from conftest import StubDistiller, base_facts
 from memento import ClaimHeld, LockTimeout, Proposal, Queue, SessionClaim, StoreLock, run_drain
 
 
-def test_one_store_has_exactly_one_lock_handle(store):
-    """Constructing a second handle returns the first.
+def test_two_handles_on_one_store_compose_instead_of_deadlocking(store):
+    """They are ordinary objects; the reentrancy state is what they share.
 
-    Two distinct handles in one process do not compose — they block each other on the flock until
-    the timeout expires. An operator `forget` inside a held lock hit exactly that, so the handle is
-    canonical per store and cannot be un-shared by a caller.
+    Caching the whole instance instead made a second construction silently ignore the timeout it
+    was handed, and left a forked child holding an inherited depth of 1 — writing inside its
+    parent's critical section without ever taking the flock.
     """
-    assert StoreLock(store.locks_dir) is StoreLock(store.locks_dir)
-    assert StoreLock(store.locks_dir) is StoreLock.for_store(store.locks_dir)
-
     lock = StoreLock(store.locks_dir, timeout=0.2)
+    other = StoreLock(store.locks_dir, timeout=5.0)
+    assert lock is not other
+    assert lock.timeout == 0.2 and other.timeout == 5.0  # each keeps what it was given
+
     with lock.hold():
-        with StoreLock(store.locks_dir, timeout=0.2).hold():
-            assert lock.held
+        with other.hold():
+            assert lock.held and other.held
+    assert not lock.held
 
 
 def test_the_store_lock_excludes_another_process(store):
@@ -67,7 +69,7 @@ def test_the_store_lock_excludes_another_thread(store):
     released.set()
 
     assert outcome == ["blocked"]
-    assert lock._depth == 0  # and the counter did not underflow on the way out
+    assert not lock.held  # and the state did not underflow on the way out
 
 
 def test_the_store_lock_is_reentrant_within_one_handle(store):

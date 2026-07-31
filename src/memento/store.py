@@ -34,6 +34,7 @@ from .clock import DEFAULT_CLOCK, Clock
 from .errors import CorruptStoreError, MementoError, SchemaVersionError, SecretsDetected
 from .events import EVENT_DOCUMENT_REPLACED, Event, EventLog
 from .fold import FoldedEntry, fold
+from .ids import validate_session_id
 from .secrets import scan_many
 
 SCHEMA_VERSION = "1"
@@ -43,6 +44,10 @@ DOCUMENT_STREAM = f"{ENGINE_DIR}/documents"
 OBJECTS_DIR = f"{ENGINE_DIR}/objects"
 LOCKS_DIR = f"{ENGINE_DIR}/locks"
 SESSIONS_DIR = "sessions"
+
+# Queue filenames, mirrored from `queue.py` so the store can recognise queue material by shape.
+JOURNAL_NAME = "journal.jsonl"
+CONSOLIDATED_NAME = "consolidated"
 
 # Prior document contents above this size are kept in the content-addressed area instead of inline
 # in the event. The area is retained, so rollback stays available either way (ADR D2 round-6 minor).
@@ -161,9 +166,13 @@ class MemoryStore:
     ) -> list[Event]:
         entries = list(entries)
         _reject_secrets(
-            (f"{stream}[{i}]", json.dumps(e, ensure_ascii=False, default=str))
+            (
+                f"{stream}[{i}]",
+                json.dumps(
+                    e.to_obj() if isinstance(e, Event) else e, ensure_ascii=False, default=str
+                ),
+            )
             for i, e in enumerate(entries)
-            if not isinstance(e, Event)
         )
         self.initialize()
         return self.log(stream).append_batch(entries, session=session, batch=batch, turn=turn)
@@ -200,6 +209,7 @@ class MemoryStore:
         session: str,
         batch: str,
         turn: int | None = None,
+        scan_secrets: bool = True,
     ) -> list[ReplaceResult]:
         """Atomically replace one or more projected documents, wholesale.
 
@@ -221,7 +231,8 @@ class MemoryStore:
         if len(set(names)) != len(names):
             raise MementoError("a single batch may not replace the same document twice")
 
-        _reject_secrets((f"document:{n}", w.content) for n, w in zip(names, writes))
+        if scan_secrets:
+            _reject_secrets((f"document:{n}", w.content) for n, w in zip(names, writes))
         self.initialize()
         log = self.document_log()
         write_batch = _write_batch_id(batch, names, [w.content for w in writes])
@@ -230,16 +241,27 @@ class MemoryStore:
         if prior_batch:
             return self._replay_replace(prior_batch, names, writes)
 
+        history = [e for e in log.read() if e.event == EVENT_DOCUMENT_REPLACED]
         payloads = []
         for name, write in zip(names, writes):
             path = self.document_path(name)
             prior = path.read_text(encoding="utf-8") if path.exists() else None
+            prior_sha = sha256_text(prior) if prior is not None else None
             payload: dict[str, Any] = {
                 "event": EVENT_DOCUMENT_REPLACED,
                 "document": name,
                 "new_sha256": sha256_text(write.content),
-                "prior_sha256": sha256_text(prior) if prior is not None else None,
+                "prior_sha256": prior_sha,
             }
+            previous = next(
+                (e for e in reversed(history) if e.payload.get("document") == name), None
+            )
+            if previous is not None and previous.payload.get("new_sha256") != prior_sha:
+                # The previous revision was recorded and then abandoned — a crash between the event
+                # and the file swap, followed by a redrive with different output. Say so, rather
+                # than leaving a chain whose links quietly do not meet: the log is the audit history,
+                # and a gap it does not admit to is worse than one it does.
+                payload["supersedes_abandoned"] = previous.batch
             if prior is None:
                 payload["prior_content"] = None
             elif len(prior.encode("utf-8")) <= self.inline_limit:
@@ -264,6 +286,7 @@ class MemoryStore:
         session: str,
         batch: str,
         turn: int | None = None,
+        scan_secrets: bool = True,
     ) -> ReplaceResult:
         """Single-document convenience.
 
@@ -272,7 +295,11 @@ class MemoryStore:
         not a second write.
         """
         return self.replace_documents(
-            [DocumentWrite(name, content)], session=session, batch=batch, turn=turn
+            [DocumentWrite(name, content)],
+            session=session,
+            batch=batch,
+            turn=turn,
+            scan_secrets=scan_secrets,
         )[0]
 
     def _replay_replace(
@@ -320,13 +347,53 @@ class MemoryStore:
 
     # --------------------------------------------------------- session logs
 
+    def versioned_paths(self) -> list[str]:
+        """The parts of the store git may track, as store-relative pathspecs.
+
+        Explicit rather than `add -A`, because the store root is not the engine's alone: a consumer
+        may put its queue — the unbounded verbatim pile — anywhere beneath it, and a blanket add
+        pushes that to the remote. Only what the engine itself versions is offered to git.
+        """
+        keep = [
+            f"{ENGINE_DIR}/schema_version",
+            f"{ENGINE_DIR}/facts.json",
+            f"{ENGINE_DIR}/documents.jsonl",
+            f"{ENGINE_DIR}/tombstones.jsonl",
+            f"{ENGINE_DIR}/backup.json",
+            OBJECTS_DIR,
+            SESSIONS_DIR,
+            ".gitignore",
+        ]
+        keep += sorted(p.name for p in self.root.glob("*.md"))
+        keep += [
+            f"{stream}.jsonl"
+            for stream in self.streams()
+            if not stream.startswith(f"{ENGINE_DIR}/") and not self._is_queue_material(stream)
+        ]
+        return [p for p in dict.fromkeys(keep) if (self.root / p).exists()]
+
+    def _is_queue_material(self, stream: str) -> bool:
+        """True for a journal in the queue area, wherever the consumer put it.
+
+        The queue's filenames are the engine's own (`journal.jsonl`, the `consolidated` marker), so
+        it can be recognised by shape rather than by trusting a declaration. A consumer that puts
+        its queue at `<store>/sessions-data` — a plausible layout — otherwise had its verbatim
+        transcript pile committed and pushed by the backup.
+        """
+        path = self.root / f"{stream}.jsonl"
+        if path.name == JOURNAL_NAME:
+            return True
+        return (path.parent / CONSOLIDATED_NAME).exists()
+
     def write_session_log(self, session: str, text: str) -> Path:
+        validate_session_id(session)
         _reject_secrets([(f"session-log:{session}", text)])
         path = self._resolve(f"{SESSIONS_DIR}/log-{session}.md")
         _atomic_write_text(path, text)
         return path
 
     def read_session_log(self, session: str) -> str | None:
+        validate_session_id(session)
         path = self._resolve(f"{SESSIONS_DIR}/log-{session}.md")
         return path.read_text(encoding="utf-8") if path.exists() else None
 

@@ -86,11 +86,61 @@ def render_path(path: Path) -> str:
     return ".".join(path) if path else "<root>"
 
 
+def _escape(segment: str) -> str:
+    """Escape the separator inside a key so two different paths cannot render the same marker.
+
+    Without this, ``("a.b", "c")`` and ``("a", "b", "c")`` both rendered ``a.b/c`` — one tombstone
+    authorising a deletion at a path the operator never named. Dotted keys are ordinary data here,
+    so the collision condition was the documented normal case rather than an edge one.
+    """
+    return segment.replace("\\", "\\\\").replace(".", "\\.")
+
+
+def _unescape(segment: str) -> str:
+    out, escaped = [], False
+    for ch in segment:
+        if escaped:
+            out.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def path_marker(path: Path) -> str:
     """The tombstone marker that retires the node at `path`: `parent.path/key`."""
     if not path:
         return ""
-    return f"{'.'.join(path[:-1])}/{path[-1]}" if len(path) > 1 else path[-1]
+    if len(path) == 1:
+        return path[-1]
+    return f"{'.'.join(_escape(p) for p in path[:-1])}/{path[-1]}"
+
+
+def split_marker(marker: str) -> tuple[Path, str]:
+    """Split a `parent.path/key` marker back into segments, honouring escaped separators.
+
+    The inverse of `path_marker`, so the thing the gate reports, the thing the operator forgets, and
+    the thing this resolves are the same identifier even when a key contains a dot.
+    """
+    parents, _, key = marker.rpartition("/")
+    if not parents:
+        return (), key
+    segments, current, escaped = [], [], False
+    for ch in parents:
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == ".":
+            segments.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    segments.append("".join(current))
+    return tuple(s for s in segments if s != ""), key
 
 
 def parse_declared(path: str) -> Path:
@@ -107,7 +157,11 @@ def member_key(item: Any, identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS) 
     turns it into a violation rather than a silent skip.
     """
     if isinstance(item, Mapping):
-        for key in identity_keys:
+        # Engine keys are consulted first, always. An adapter widens this set to describe a taxonomy
+        # the engine cannot guess — but a *superset* that happened to be searched first could put a
+        # non-identity field (`engagement`) ahead of a real one (`topic`) and blind the floor to
+        # substitution. Adding a key may only help; it may never displace.
+        for key in (*DEFAULT_IDENTITY_KEYS, *identity_keys):
             value = item.get(key)
             if value is not None:
                 return str(value)
@@ -404,6 +458,23 @@ class AntiErosionFloor:
     def check(self, current: StoreState, proposal: Proposal) -> list[Violation]:
         allowed = set(current.tombstones) | set(proposal.tombstones)
         out: list[Violation] = []
+
+        # Check what is being *written* first. Walking only the current state let an unverifiable
+        # collection land on an empty store and then fail every later proposal — including an exact
+        # no-op — which, with all-or-nothing writes, locked the store for good.
+        for path, value in walk(proposal.facts, self.identity_keys):
+            view = membership(value, self.identity_keys)
+            if view is not None and view.problem is not None:
+                out.append(
+                    Violation(
+                        self.name,
+                        render_path(path),
+                        f"cannot be stored: {view.problem}",
+                    )
+                )
+        if out:
+            return out
+
         for path, value in walk(current.facts, self.identity_keys):
             if _covered(path, allowed):
                 continue  # this node, or something containing it, was explicitly retired

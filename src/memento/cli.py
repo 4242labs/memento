@@ -89,6 +89,8 @@ def cmd_history(args: argparse.Namespace) -> int:
     for rev in revisions:
         ev = rev.event
         marker = "" if rev.has_prior else "  (no prior content — rollback unavailable)"
+        if rev.abandoned_predecessor:
+            marker += f"  (supersedes abandoned {rev.abandoned_predecessor})"
         print(f"[{rev.ordinal_in_history}] {ev.ts}  session={ev.session}  batch={ev.batch}{marker}")
     return 0
 

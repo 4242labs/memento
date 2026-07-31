@@ -18,6 +18,8 @@ session's id — never batched under a later session's.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,15 +52,29 @@ class BackupConfig:
     timeout: float = DEFAULT_TIMEOUT
 
 
-def _ensure_gitignore(store: MemoryStore) -> None:
+def _has_inline_credentials(remote: str) -> bool:
+    """`https://user:token@host/...` — a password in a URL the store would then persist."""
+    match = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/@]+)@", remote)
+    return bool(match and ":" in match.group(1))
+
+
+def _ensure_gitignore(store: MemoryStore, queue_root: str | os.PathLike[str] | None = None) -> None:
     """Guarantee the unversioned area is ignored, extending a pre-existing file rather than skipping.
 
     A store that already has a `.gitignore` — the adopted-store case — would otherwise have its
     locks and queue committed and pushed by the drain's `git add -A`.
     """
+    wanted = [line for line in STORE_GITIGNORE.splitlines() if line]
+    if queue_root is not None:
+        # The queue is unversioned wherever the consumer actually put it. Hard-coding one path meant
+        # a queue at `<store>/sessions-data` — jubs' own name — was committed and pushed.
+        queue = Path(queue_root).resolve()
+        if store.root == queue or store.root in queue.parents:
+            wanted.append(f"/{queue.relative_to(store.root).as_posix()}/")
+
     path = store.root / ".gitignore"
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    missing = [line for line in STORE_GITIGNORE.splitlines() if line and line not in existing.splitlines()]
+    missing = [line for line in wanted if line not in existing.splitlines()]
     if not missing:
         return
     prefix = existing if existing.endswith("\n") or not existing else existing + "\n"
@@ -110,13 +126,27 @@ def enable_backup(
     remote: str | None = None,
     branch: str = "main",
     timeout: float = DEFAULT_TIMEOUT,
+    queue_root: str | os.PathLike[str] | None = None,
 ) -> BackupConfig:
-    """Opt a store into git backup. Refuses unless the caller passes the acknowledgement."""
+    """Opt a store into git backup. Refuses unless the caller passes the acknowledgement.
+
+    Pass `queue_root` when the queue lives inside the store, so it is excluded from what gets
+    pushed — the queue is the unversioned half of the store contract and holds the verbatim pile.
+    """
     if not acknowledged:
         raise BackupError(f"backup requires explicit opt-in. {OPT_IN_WARNING}")
 
+    if remote and _has_inline_credentials(remote):
+        # Checked first, so a refusal cannot leave the store half-configured with a git repo and an
+        # origin already set. A token in the URL would also be written to the store in plain text,
+        # which is the one thing D8 says must never happen.
+        raise BackupError(
+            "the remote URL carries an inline credential. Use SSH, or a git credential helper, so "
+            "the secret never enters the store"
+        )
+
     store.initialize()
-    _ensure_gitignore(store)
+    _ensure_gitignore(store, queue_root)
 
     if not (store.root / ".git").exists():
         git(store, "init", "-b", branch, timeout=timeout)
@@ -166,7 +196,7 @@ def commit_consolidation(
         return None
     lock = lock or StoreLock.for_store(store.locks_dir)
     with lock.hold():
-        git(store, "add", "-A", timeout=config.timeout)
+        git(store, "add", "-A", "--", *store.versioned_paths(), timeout=config.timeout)
         status = git(store, "status", "--porcelain", timeout=config.timeout).stdout.strip()
         if not status:
             return None

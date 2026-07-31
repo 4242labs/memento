@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .clock import DEFAULT_CLOCK, Clock
-from .errors import ClaimHeld, LockTimeout
+from .errors import ClaimHeld, LockTimeout, MementoError
 from .ids import validate_session_id
 
 DEFAULT_LOCK_TIMEOUT = 30.0
@@ -61,81 +61,84 @@ def file_lock(path: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> Iterator[
             os.close(fd)
 
 
+@dataclass
+class _LockState:
+    """The lock state for one store root, shared by every handle that points at it."""
+
+    reentrant: threading.RLock
+    owner_pid: int
+    depth: int = 0
+    fd: int | None = None
+
+
 class StoreLock:
     """The one write lock for a store.
 
-    Re-entrant **per thread** and mutually exclusive **between** threads, which needs an in-process
-    `RLock` as well as the `flock`: `flock` is per open file description, so two handles in one
-    process do exclude each other, but a plain depth counter shared by two threads does not. Sharing
-    one counter let both threads inside the critical section, underflowed it to -1, and — since -1
-    is truthy — turned the lock into a permanent no-op for the life of the process.
+    Re-entrant **per thread** and mutually exclusive **between** threads and processes. Three things
+    have to be true at once, and each was learned the hard way:
 
-    Use `for_store()` rather than constructing one per call site: two different handles on the same
-    store deadlock each other for the full timeout, which is what an operator `forget` inside a held
-    lock used to do.
+    * `flock` alone is not enough — a depth counter shared by two threads let both inside the
+      critical section and underflowed to -1, which is truthy, so the lock became a no-op for good.
+    * Two *handles* on one store must compose rather than deadlock on each other, so the reentrancy
+      state lives per store path, not per object.
+    * The handle itself must stay ordinary. Caching whole instances meant a second construction
+      silently ignored the timeout it was given, and a forked child inherited a `depth` of 1 and
+      wrote inside its parent's critical section without ever taking the flock.
     """
 
-    _instances: "dict[Path, StoreLock]" = {}
-    _registry_guard = threading.RLock()
-
-    def __new__(cls, locks_dir: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> "StoreLock":
-        """One instance per store, however many times a caller constructs it.
-
-        Two *different* handles on the same store do not compose — they block each other on the
-        `flock` until the timeout expires, which is what an operator `forget` inside a held lock ran
-        into. Canonicalising here means callers cannot reintroduce that by constructing their own.
-        """
-        key = Path(locks_dir).resolve()
-        with cls._registry_guard:
-            existing = cls._instances.get(key)
-            if existing is not None:
-                return existing
-            self = super().__new__(cls)
-            self.path = key / "store.lock"
-            self.timeout = timeout
-            self._reentrant = threading.RLock()
-            self._depth = 0
-            self._fd = None
-            cls._instances[key] = self
-            return self
+    _states: "dict[Path, _LockState]" = {}
+    _registry_guard = threading.Lock()
 
     def __init__(self, locks_dir: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> None:
-        # State is set once, in __new__. A second construction must not reset the depth of a lock
-        # another frame is currently holding.
-        pass
+        self.root = Path(locks_dir).resolve()
+        self.path = self.root / "store.lock"
+        self.timeout = timeout
 
     @classmethod
     def for_store(cls, locks_dir: Path, *, timeout: float = DEFAULT_LOCK_TIMEOUT) -> "StoreLock":
-        """Explicit spelling of the same canonicalisation. Preferred at call sites for clarity."""
+        """Explicit spelling for call sites; any handle on the same path shares the same state."""
         return cls(locks_dir, timeout=timeout)
+
+    @property
+    def _state(self) -> _LockState:
+        pid = os.getpid()
+        with self._registry_guard:
+            state = self._states.get(self.root)
+            if state is None or state.owner_pid != pid:
+                # A fresh process — including a forked child — starts from zero. Inheriting the
+                # parent's depth would let the child skip the flock entirely.
+                state = _LockState(reentrant=threading.RLock(), owner_pid=pid)
+                self._states[self.root] = state
+            return state
 
     @contextmanager
     def hold(self, *, timeout: float | None = None) -> Iterator[None]:
         wait = self.timeout if timeout is None else timeout
-        if not self._reentrant.acquire(timeout=wait):
+        state = self._state
+        if not state.reentrant.acquire(timeout=wait):
             raise LockTimeout(f"another thread holds {self.path} (waited {wait}s)")
         try:
-            if self._depth:
-                self._depth += 1
+            if state.depth:
+                state.depth += 1
                 try:
                     yield
                 finally:
-                    self._depth -= 1
+                    state.depth -= 1
                 return
             with file_lock(self.path, timeout=wait) as fd:
-                self._depth = 1
-                self._fd = fd
+                state.depth = 1
+                state.fd = fd
                 try:
                     yield
                 finally:
-                    self._depth = 0
-                    self._fd = None
+                    state.depth = 0
+                    state.fd = None
         finally:
-            self._reentrant.release()
+            state.reentrant.release()
 
     @property
     def held(self) -> bool:
-        return self._depth > 0
+        return self._state.depth > 0
 
 
 @dataclass
@@ -223,7 +226,12 @@ def stale_claims(
     out = []
     for path in sorted(directory.glob("claim-*.lock")):
         session = path.name[len("claim-") : -len(".lock")]
-        claim = SessionClaim(directory, session)
+        try:
+            claim = SessionClaim(directory, session)
+        except MementoError:
+            # An artifact from before session ids were validated. Reporting is a courtesy; letting
+            # it raise here would kill every drain before it looked at a single session.
+            continue
         info = claim.read_info()
         if info is not None and info.is_stale(now, ttl):
             out.append(info)
