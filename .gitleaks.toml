@@ -1,0 +1,13 @@
+# gitleaks configuration for the MEMENTO engine.
+#
+# The repo is public and holds engine code plus synthetic fixtures only. This gate exists to keep it
+# that way: the store format is plain text, so anything that leaked into a fixture would leak in the
+# open. Stores themselves are kept out by the root-anchored `/memory/` rule in .gitignore.
+#
+# There is deliberately **no allowlist**. The tests that prove the write-path secrets gate fires
+# build their samples by concatenation, so no credential-shaped literal exists anywhere in the tree
+# or in this branch's history — which means the scanner needs no exception, and an exception cannot
+# quietly widen into one later.
+
+[extend]
+useDefault = true
