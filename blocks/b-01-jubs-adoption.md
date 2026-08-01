@@ -25,7 +25,7 @@ jubs-meta via grant flow: rev-6 §3.5/§3.12 amendment (store path, engine depen
 
 | # | Criterion | Verification |
 |:--|:--|:--|
-| AC-1 | Full jubs suite green on the engine-backed memory path, tests unmodified | `test` |
+| AC-1 | Full jubs suite green on the engine-backed memory path, tests unmodified — both suites at the v1.2.1 baseline (409 pytest + 19 Playwright) | `test` |
 | AC-2 | Store moved byte-identical; live session reads prior memory correctly (session N+1 references N) | `cmd:diff + smoke session` |
 | AC-3 | Private backup pushes; old local repo + GitHub repo deleted | `cmd:gh repo view (404)` |
 | AC-4 | Canon amendment landed via grant flow | `cmd:git log jubs-meta` |
