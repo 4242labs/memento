@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Refuse to commit a secret rather than discovering it in history.
+#
+# Once a credential-shaped string is in a commit, the only ways out are rewriting history or adding
+# an exception, and both cost more than this hook. Enable with:
+#
+#     git config core.hooksPath .githooks
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not installed — skipping the secrets check." >&2
+  echo "            install it (brew install gitleaks) or this hook protects nothing." >&2
+  exit 0
+fi
+
+gitleaks protect --staged --config .gitleaks.toml --redact --no-banner --exit-code 1 || {
+  echo >&2
+  echo "pre-commit: a staged change looks like a credential." >&2
+  echo "  If it is real:  remove it. Do not commit and fix later — history is forever." >&2
+  echo "  If it is bait:  build it with tests/support/fake_credentials.py instead of a literal." >&2
+  exit 1
+}
