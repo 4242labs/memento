@@ -196,8 +196,16 @@ def commit_consolidation(
         return None
     lock = lock or StoreLock.for_store(store.locks_dir)
     with lock.hold():
-        git(store, "add", "-A", "--", *store.versioned_paths(), timeout=config.timeout)
-        status = git(store, "status", "--porcelain", timeout=config.timeout).stdout.strip()
+        versioned = store.versioned_paths()
+        git(store, "add", "-A", "--", *versioned, timeout=config.timeout)
+        # Scoped to the same pathspec the add used. A whole-repo status also reports files the
+        # engine deliberately does not version, and those can never be staged — so the guard read
+        # "there is something to commit", `git commit` found an empty index and exited non-zero,
+        # and every backup from then on raised. One stray untracked file under the store root is
+        # enough, and a store root is not the engine's alone: jubs' had two `.gitkeep`s.
+        status = git(
+            store, "status", "--porcelain", "--", *versioned, timeout=config.timeout
+        ).stdout.strip()
         if not status:
             return None
         git(store, "commit", "-m", f"memory: consolidate session {session}", timeout=config.timeout)
