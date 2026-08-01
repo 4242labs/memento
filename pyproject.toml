@@ -12,7 +12,7 @@ dependencies = []
 memento = "memento.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "mutmut>=3.0"]
 
 [build-system]
 requires = ["hatchling"]
@@ -28,4 +28,14 @@ addopts = "-q -m 'not live'"
 markers = ["live: non-gating live-tier tests; require a real model and are skipped by default"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "mutmut>=3.0"]
+
+[tool.mutmut]
+# Mutation testing is how "the tests are green" becomes evidence rather than a claim: it breaks the
+# engine on purpose and requires a test to notice. Three of this repo's regression tests once passed
+# against the very code they were written to guard, and nothing caught it. This is what catches it.
+#
+# Scoped to the modules where a silent pass is a data-loss bug — the write gates, the event log, the
+# store, and the lock protocol. Run it with `python -m tools.mutation`.
+source_paths = ["src/memento/gates.py", "src/memento/events.py", "src/memento/store.py", "src/memento/locking.py"]
+also_copy = ["tests/", "pyproject.toml", "src/memento/prompts/"]
