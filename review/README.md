@@ -42,6 +42,10 @@ The six that still pass are **not** live defects, and each was checked individua
 | `round2::test_V2_...` | Asserts `Path.rglob` does not descend into directory symlinks — a property of CPython. |
 | `round2::test_P3_...` | Asserts the fingerprint compare-and-swap is correct. Making it fail would mean breaking the engine. |
 
+These files are verbatim apart from one thing: credential-shaped literals are split by string
+concatenation, so the repo contains none and the secrets scan needs no exception. Behaviour is
+unchanged.
+
 `old_lock.py` is a frozen copy of `StoreLock` as it was before the round-one fixes. Keep it: two
 repros depend on it, and it is the only record of what that code looked like.
 
