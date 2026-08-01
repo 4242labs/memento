@@ -62,8 +62,17 @@ def test_a_real_distillation_passes_the_gates_most_of_the_time(tmp_path):
 
     for i in range(ROUNDS):
         store = MemoryStore(tmp_path / f"round-{i}")
-        proposal = distiller.distill(SYNTHETIC_JOURNAL, StoreState(), adapter.distillation_prompt)
         try:
+            # `distill` is inside the try, not before it. A consumer's distiller runs its own
+            # domain gates before it can even build a Proposal — jubs re-derives entry ids and
+            # folds a type alias the model reaches for — and a rejection there is exactly the
+            # prompt/gate disagreement this tier measures. Left outside, the FIRST such round
+            # aborted the whole run with an exception instead of counting toward tolerance, so
+            # a real finding read as a broken harness. ADR D3 already says a distiller raising
+            # is a deferral plus a FLAG, never a crash; the tier should agree.
+            proposal = distiller.distill(
+                SYNTHETIC_JOURNAL, StoreState(), adapter.distillation_prompt
+            )
             apply_consolidation(store, adapter, proposal, session=f"live-{i}", batch="b1", expected_fingerprint=UNCHECKED)
         except GateFailure:
             rejected += 1
