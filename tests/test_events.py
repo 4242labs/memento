@@ -77,3 +77,41 @@ def test_payload_may_not_shadow_the_envelope(store):
 
 def test_reading_a_missing_stream_is_empty_not_an_error(store):
     assert EventLog(store.stream_path("errors/de")).read() == []
+
+
+def test_repair_tail_is_public_so_a_consumer_appender_cannot_weld(store):
+    """A consumer with its own idempotency rule still appends through the same file.
+
+    jubs keys its batches on `(id, event, ordinal)` where the engine keys on
+    `(session, batch)`, so it filters the batch itself and writes the missing tail. Doing that
+    onto a torn final line welds the fragment onto the next event — and the result is a bad
+    line in the *middle* of the log, which `read` refuses to skip, so the whole stream is lost
+    from that point on. The repair the engine already runs before its own appends has to be
+    reachable, or every consumer reimplements it and gets it wrong.
+    """
+    store.append("errors/en", [{"id": "e1"}], session="s1", batch="b1")
+    path = store.stream_path("errors/en")
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write('{"id": "e2", "event": "entry", "ts": "2026-')  # power cut, mid-line
+
+    log = EventLog(path)
+    log.repair_tail()
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": "e3", "event": "entry", "ts": "t", "session": "s1",
+                             "batch": "b2", "ordinal": 0}) + "\n")
+
+    assert [e.id for e in log.read()] == ["e1", "e3"]
+
+
+def test_appending_onto_a_torn_tail_without_repairing_it_destroys_the_stream(store):
+    """The failure the public repair exists to prevent — asserted, so it cannot be argued away."""
+    store.append("errors/en", [{"id": "e1"}], session="s1", batch="b1")
+    path = store.stream_path("errors/en")
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write('{"id": "e2", "event": "entry", "ts": "2026-')
+    with open(path, "a", encoding="utf-8") as fh:  # no repair: the weld
+        fh.write(json.dumps({"id": "e3", "event": "entry", "ts": "t", "session": "s1",
+                             "batch": "b2", "ordinal": 0}) + "\n")
+
+    with pytest.raises(CorruptStoreError):
+        EventLog(path).read()
