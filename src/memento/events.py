@@ -162,7 +162,7 @@ class EventLog:
     def has_batch(self, session: str, batch: str) -> bool:
         return any(e.batch_key == (session, batch) for e in self.read())
 
-    def _repair_tail(self) -> None:
+    def repair_tail(self) -> None:
         """Make the file safe to append to.
 
         Two ways a log can lack a final newline, and they need opposite treatment:
@@ -196,6 +196,12 @@ class EventLog:
             fh.truncate()
             fh.flush()
             os.fsync(fh.fileno())
+
+    #: Public since B-01. A consumer that appends to a stream with its own idempotency rule —
+    #: jubs keys on `(id, event, ordinal)` where the engine keys on `(session, batch)` — still
+    #: has to repair the tail first, or it welds a torn fragment onto the next event and puts an
+    #: unparseable line in the *middle* of the log, which `read` correctly refuses to skip.
+    _repair_tail = repair_tail
 
     def append_batch(
         self,
@@ -273,7 +279,7 @@ class EventLog:
 
         blob = "".join(json.dumps(e.to_obj(), ensure_ascii=False) + "\n" for e in events)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._repair_tail()
+        self.repair_tail()
         # One write, one fsync: the whole batch reaches the page cache as a single call, so the only
         # crash residue possible is a torn tail, which read() already tolerates and this replays.
         with open(self.path, "a", encoding="utf-8") as fh:
