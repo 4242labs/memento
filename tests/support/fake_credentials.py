@@ -8,7 +8,9 @@ and a secret in git history is not removable without rewriting it — which is w
 always a rewrite or an exception, and neither is free. Keeping them out of the source text keeps
 that choice off the table entirely.
 
-`AKIAIOSFODNN7EXAMPLE` is AWS's own published example key. It is not, and never was, live.
+The AWS sample is that vendor's own published example key. None of these is, or ever was, live —
+and none is written out as a literal, including in this docstring, which is how the last two
+findings got into the history of the very files meant to prevent them.
 """
 
 from __future__ import annotations
