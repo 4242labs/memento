@@ -9,7 +9,17 @@ import pytest
 
 from conftest import StubDistiller, base_facts
 from memento.writepath import UNCHECKED
-from memento import BackupError, Proposal, Queue, StoreLock, apply_consolidation, run_drain
+from memento import (
+    BackupError,
+    DocumentWrite,
+    Proposal,
+    Queue,
+    StoreLock,
+    apply_consolidation,
+    commit_consolidation,
+    enable_backup,
+    run_drain,
+)
 from memento import backup as backup_mod
 
 
@@ -135,3 +145,25 @@ def test_a_failing_push_flags_but_never_loses_the_local_write(store, adapter, tm
     assert report.consolidated == ["s1"]
     assert queue.is_consolidated("s1")
     assert any(f.kind == "backup-failed" for f in report.flags)
+
+
+def test_an_unversioned_file_under_the_store_does_not_break_the_no_op_guard(store):
+    """The guard has to ask about the same paths the add staged.
+
+    A whole-repo status also reports files the engine deliberately does not version — and those
+    can never be staged, so the guard read "something changed", `git commit` found an empty index
+    and exited non-zero, and every backup from then on raised `BackupError`. A store root is not
+    the engine's alone; one stray file is enough. jubs' adopted store had two `.gitkeep`s and hit
+    this on its first clean consolidation.
+    """
+    enable_backup(store, acknowledged=True)
+    store.replace_documents(
+        [DocumentWrite("profile.md", "## en\n")], session="s1", batch="b1"
+    )
+    assert commit_consolidation(store, "s1") is not None
+
+    (store.root / "errors").mkdir(parents=True, exist_ok=True)
+    (store.root / "errors" / ".gitkeep").write_text("", encoding="utf-8")
+
+    # Nothing the engine versions has changed, so this is a no-op — not an error.
+    assert commit_consolidation(store, "s2") is None
