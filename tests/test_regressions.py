@@ -39,6 +39,7 @@ from memento import (
 from memento.events import EventLog
 from memento.forgetting import document_revisions, rollback_document
 from memento.writepath import UNCHECKED, facts_fingerprint, read_facts
+from support.fake_credentials import fake_credential
 
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 
@@ -312,7 +313,7 @@ def test_a_claim_refuses_the_same_ids(store):
 def test_replace_document_is_gated(store):
     with pytest.raises(SecretsDetected):
         store.replace_document(
-            "profile.md", "key: sk-ant-" + "A" * 40 + "\n", session="s", batch="b"
+            "profile.md", f"key: {fake_credential('anthropic-key')}\n", session="s", batch="b"
         )
     assert store.read_document("profile.md") is None
 
@@ -321,7 +322,7 @@ def test_the_cli_edit_verb_is_gated(store, tmp_path, capsys):
     from memento.cli import main
 
     paste = tmp_path / "paste.md"
-    paste.write_text("AKIA" + "IOSFODNN7EXAMPLE" + "\n", encoding="utf-8")
+    paste.write_text(fake_credential("aws-access-key") + "\n", encoding="utf-8")
 
     with pytest.raises(SecretsDetected):
         main(["--store", str(store.root), "edit", "notes.md", "--from-file", str(paste)])
@@ -332,14 +333,14 @@ def test_the_cli_edit_verb_is_gated(store, tmp_path, capsys):
 def test_a_direct_event_append_is_gated(store):
     with pytest.raises(SecretsDetected):
         store.append(
-            "vocab/fr", [{"id": "v1", "item": "AKIA" + "IOSFODNN7EXAMPLE"}], session="s", batch="b"
+            "vocab/fr", [{"id": "v1", "item": fake_credential("aws-access-key")}], session="s", batch="b"
         )
     assert store.log("vocab/fr").read() == []
 
 
 def test_a_session_log_is_gated(store):
     with pytest.raises(SecretsDetected):
-        store.write_session_log("s1", "they pasted ghp_" + "a" * 36)
+        store.write_session_log("s1", f"they pasted {fake_credential('github-token')}")
     assert store.session_logs() == []
 
 
@@ -785,7 +786,7 @@ def test_a_credential_bearing_remote_is_refused_before_anything_is_configured(st
         enable_backup(
             store,
             acknowledged=True,
-            remote="https://x-access-token:ghp_" + "a" * 36 + "@github.com/o/r.git",
+            remote=fake_credential("url-with-credential"),
         )
 
     assert not (store.root / ".git").exists()  # and not half-configured either
@@ -796,7 +797,7 @@ def test_rollback_can_restore_content_that_trips_the_secrets_gate(store):
     the gate must not be what takes it away."""
     store.replace_document("profile.md", "ordinary\n", session="s1", batch="b1")
     store.replace_document(
-        "profile.md", "AKIA" + "IOSFODNN7EXAMPLE" + "\n", session="s2", batch="b2",
+        "profile.md", fake_credential("aws-access-key") + "\n", session="s2", batch="b2",
         scan_secrets=False,
     )
 
@@ -805,7 +806,7 @@ def test_rollback_can_restore_content_that_trips_the_secrets_gate(store):
     store.replace_document("profile.md", "later\n", session="s3", batch="b3")
     rollback_document(store, "profile.md", session="s4", batch="b4")
 
-    assert "IOSFODNN7EXAMPLE" in store.read_document("profile.md")
+    assert fake_credential("aws-access-key") in store.read_document("profile.md")
 
 
 def test_a_legacy_claim_file_does_not_kill_the_drain(store, adapter, queue, clock):

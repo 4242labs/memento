@@ -1,0 +1,12 @@
+# Per-finding exceptions, pinned to an exact commit, file, rule and line.
+#
+# This is the mechanism to reach for — never a path allowlist in .gitleaks.toml, which covers
+# everything anyone adds to that file afterwards. A fingerprint here stops being valid the moment
+# the line moves, so it cannot silently widen.
+#
+# Both entries below are the same fabricated string: AKIAIOSFODNN7EXAMPLE, AWS's own published
+# example key, used as bait to prove the write-path secrets gate rejects it. It was committed in a
+# preserved review artifact and split by concatenation in the very next commit, so it exists only in
+# 4c5eac8 and nowhere in the working tree.
+4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:230
+4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:233

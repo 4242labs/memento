@@ -204,7 +204,9 @@ with no baseline passes `writepath.UNCHECKED` and says so.
 | Facts depth capped at 64 | An unbounded walk raised `RecursionError`, which is not a `MementoError`, so no caller could catch it and the drain turned it into a permanent deferral. |
 | Backup stages explicit paths, not `add -A` | The store root is not the engine's alone. A consumer queue under it — jubs' `sessions-data` is the obvious case — was being committed and pushed. |
 | Live tier non-gating | A flaky model day must not turn the build red. The deterministic tier gates precisely because it needs no model. |
-| No gitleaks allowlist | Test samples are built by concatenation, so no credential-shaped literal exists in the tree or history and the scanner needs no exception. Keep it that way. |
+| No gitleaks path allowlist | Path exceptions cover everything added to that file afterwards. Per-finding fingerprints in `.gitleaksignore` die when the line moves, so they cannot widen. |
+| One fixture factory for fake credentials | `tests/support/fake_credentials.py` assembles them at runtime. A literal gets committed, and a secret in history costs a rewrite or an exception — neither is free. |
+| Pre-commit hook | `git config core.hooksPath .githooks`. Prevention is the only cheap fix; CI greps as the backstop for anyone who has not enabled it. |
 
 ---
 

@@ -54,7 +54,21 @@ jobs:
           chmod +x gitleaks
 
       - name: Scan history
+        # .gitleaksignore carries per-finding fingerprints (commit:file:rule:line). Never widen
+        # .gitleaks.toml with a path allowlist — a fingerprint dies when the line moves; a path
+        # exception silently covers everything added to that file later.
         run: ./gitleaks detect --config .gitleaks.toml --redact --no-banner --exit-code 1
+
+      - name: No credential-shaped literals outside the fixture factory
+        # The pre-commit hook enforces this locally for anyone who ran `git config core.hooksPath
+        # .githooks`. This is the backstop for everyone else.
+        run: |
+          if grep -rInE '(AKIA|ASIA)[0-9A-Z]{16}|ghp_[A-Za-z0-9]{36}|sk-ant-[A-Za-z0-9_-]{20}' \
+               --exclude-dir=.git --exclude=fake_credentials.py --exclude=.gitleaksignore . ; then
+            echo "::error::build credential-shaped test data with tests/support/fake_credentials.py"
+            exit 1
+          fi
+          echo "no credential-shaped literals"
 
   no-store-committed:
     # A store is data, never code. If one ever lands in this repo, it lands in public.

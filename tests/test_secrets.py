@@ -9,19 +9,14 @@ from memento.writepath import UNCHECKED
 from memento import Proposal, SecretsDetected, apply_consolidation
 from memento.flags import SECRETS_REJECTED, FlagSink
 from memento.secrets import scan
+from support.fake_credentials import fake_credential
 
-SAMPLES = {
-    "aws-access-key": "AKIA" + "IOSFODNN7EXAMPLE",
-    "github-token": "ghp_" + "a" * 36,
-    "anthropic-key": "sk-ant-" + "b" * 40,
-    "private-key-block": "-----BEGIN RSA PRIVATE " + "KEY-----",
-    "assigned-secret": "api_key" + ' = "0123456789abcdefghij"',
-}
-
-
-@pytest.mark.parametrize("kind,sample", sorted(SAMPLES.items()))
-def test_each_pattern_is_detected(kind, sample):
-    assert kind in {m.pattern for m in scan(sample)}
+@pytest.mark.parametrize(
+    "kind",
+    ["aws-access-key", "github-token", "anthropic-key", "private-key-block", "assigned-secret"],
+)
+def test_each_pattern_is_detected(kind):
+    assert kind in {m.pattern for m in scan(fake_credential(kind))}
 
 
 def test_ordinary_prose_is_not_a_secret():
@@ -33,7 +28,7 @@ def test_a_secret_in_a_document_is_refused_and_nothing_is_written(seeded, adapte
     sink = FlagSink()
     proposal = Proposal(
         facts=base_facts(),
-        documents={"profile.md": "## en\n- token: ghp_" + "c" * 36 + "\n"},
+        documents={"profile.md": f"## en\n- token: {fake_credential('github-token')}\n"},
     )
 
     with pytest.raises(SecretsDetected):
@@ -49,7 +44,7 @@ def test_a_secret_in_a_document_is_refused_and_nothing_is_written(seeded, adapte
 def test_a_secret_in_an_entry_is_refused(seeded, adapter):
     proposal = Proposal(
         facts=base_facts(),
-        entries={"vocab/en": [{"id": "v1", "item": "AKIA" + "IOSFODNN7EXAMPLE"}]},
+        entries={"vocab/en": [{"id": "v1", "item": fake_credential("aws-access-key")}]},
     )
     with pytest.raises(SecretsDetected):
         apply_consolidation(seeded, adapter, proposal, session="s2", batch="b2", expected_fingerprint=UNCHECKED)
@@ -58,7 +53,7 @@ def test_a_secret_in_an_entry_is_refused(seeded, adapter):
 def test_a_secret_in_the_session_log_is_refused(seeded, adapter):
     proposal = Proposal(
         facts=base_facts(),
-        session_log="they pasted -----BEGIN OPENSSH PRIVATE " + "KEY----- into the chat",
+        session_log=f"they pasted {fake_credential('private-key-block')} into the chat",
     )
     with pytest.raises(SecretsDetected):
         apply_consolidation(seeded, adapter, proposal, session="s2", batch="b2", expected_fingerprint=UNCHECKED)
@@ -66,7 +61,7 @@ def test_a_secret_in_the_session_log_is_refused(seeded, adapter):
 
 def test_a_secret_in_the_facts_is_refused(seeded, adapter):
     facts = base_facts()
-    facts["languages"]["fr"]["goals"] = "remember my token ghp_" + "d" * 36
+    facts["languages"]["fr"]["goals"] = f"remember my token {fake_credential('github-token')}"
     with pytest.raises(SecretsDetected):
         apply_consolidation(seeded, adapter, Proposal(facts=facts), session="s2", batch="b2", expected_fingerprint=UNCHECKED)
 
@@ -78,7 +73,7 @@ def test_the_gate_fires_before_anything_touches_disk(store, adapter, queue):
         apply_consolidation(
             store,
             adapter,
-            Proposal(facts=base_facts(), session_log="AKIA" + "IOSFODNN7EXAMPLE"),
+            Proposal(facts=base_facts(), session_log=fake_credential("aws-access-key")),
             session="s1",
             batch="b1",
             queue=queue,
