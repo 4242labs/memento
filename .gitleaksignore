@@ -10,3 +10,10 @@
 # working tree. The literal is deliberately not written out here — see tests/support/.
 4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:230
 4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:233
+
+# Two more of the same fabricated sample, from cc590bf — where it appeared in the *comments* of the
+# two files meant to keep it out. Removed from the tree in the next commit; pinned here because a
+# commit cannot be edited, only rewritten. That it happened at all is the argument for the
+# pre-commit hook: `gitleaks detect` reads history, so checking before you commit checks nothing.
+cc590bf4c53541df4ddf56e9495751162701ef99:.gitleaksignore:aws-access-token:7
+cc590bf4c53541df4ddf56e9495751162701ef99:tests/support/fake_credentials.py:aws-access-token:11
