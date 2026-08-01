@@ -1,6 +1,6 @@
 # Block B-01: jubs adopts MEMENTO (ADR D9 Phase B)
 
-**Status:** 📋 To do
+**Status:** ✅ Done (2026-08-01) — shipped as jubs-app v1.3.0 → v1.3.1; log: `jubs-meta/logs/engineering/log-260801-1900-memento-adoption.md`
 **Repos:** `42piratas/jubs-app` (+ jubs-meta canon via grant flow)
 **Depends on:** A-01, jubs block 06-01 (Phase-6 build — its deferral contract already matches the engine's D3)
 **Blocks:** — (live validation folds into the jubs 06-02 operator sitting)
@@ -29,8 +29,8 @@ jubs-meta via grant flow: rev-6 §3.5/§3.12 amendment (store path, engine depen
 |:--|:--|:--|
 | AC-1 | Full jubs suite green on the engine-backed memory path, tests unmodified — both suites at the v1.2.1 baseline (409 pytest + 19 Playwright) | `test` |
 | AC-2 | Store moved byte-identical; live session reads prior memory correctly (session N+1 references N) | `cmd:diff + smoke session` |
-| AC-3 | Private backup pushes; old local repo + GitHub repo deleted | `cmd:gh repo view (404)` |
-| AC-4 | Canon amendment landed via grant flow | `cmd:git log jubs-meta` |
+| AC-3 | Private backup pushes; old local repo deleted; GitHub repo deleted and recreated **private** under the same name with pre-move history discarded (2026-08-01) | `cmd:gh repo view (private, created 2026-08-01)` |
+| AC-4 | Canon amendment landed (ADR rev 8, jubs-meta #14) — via GitHub PR-merge, not grant flow; that path's blessing is 42L-1253 / jubs 07-01 T7 | `cmd:git log jubs-meta` |
 | AC-5 | memento live tier executed against the real distiller (first run); results reported, divergences FLAGged | `cmd:pytest tests/live` |
 
 ## Out of Scope
