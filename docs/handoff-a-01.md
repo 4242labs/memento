@@ -207,6 +207,7 @@ with no baseline passes `writepath.UNCHECKED` and says so.
 | No gitleaks path allowlist | Path exceptions cover everything added to that file afterwards. Per-finding fingerprints in `.gitleaksignore` die when the line moves, so they cannot widen. |
 | One fixture factory for fake credentials | `tests/support/fake_credentials.py` assembles them at runtime. A literal gets committed, and a secret in history costs a rewrite or an exception — neither is free. |
 | Pre-commit hook | `git config core.hooksPath .githooks`. Prevention is the only cheap fix; CI greps as the backstop for anyone who has not enabled it. |
+| Squash-merge anything carrying a gitleaks fingerprint | Fingerprints are commit-pinned. A rebase merge rewrites the commit, every pin misses, and `main` goes red — which is exactly what happened landing PR #2. |
 
 ---
 

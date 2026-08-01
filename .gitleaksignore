@@ -1,19 +1,22 @@
 # Per-finding exceptions, pinned to an exact commit, file, rule and line.
 #
 # This is the mechanism to reach for — never a path allowlist in .gitleaks.toml, which covers
-# everything anyone adds to that file afterwards. A fingerprint here stops being valid the moment
-# the line moves, so it cannot silently widen.
+# everything anyone adds to that file afterwards. A fingerprint stops being valid the moment the
+# line moves, so it cannot silently widen.
 #
-# Both entries below are the same fabricated string: AWS's own published example access key, used as
-# bait to prove the write-path secrets gate rejects it. It was committed in a preserved review
-# artifact and removed in the very next commit, so it exists only in 4c5eac8 and nowhere in the
-# working tree. The literal is deliberately not written out here — see tests/support/.
-4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:230
-4c5eac867b278189d3b7c32cc6b907ba13eb3cfe:review/round1/test_adversarial.py:aws-access-token:233
+# **Fingerprints are commit-pinned, so rebasing invalidates them.** These were written against the
+# branch SHAs and every one broke the moment the PR was rebase-merged, turning `main` red. Land
+# anything carrying a fingerprint with a **squash** merge, or repin immediately after. That trade —
+# precision at the cost of surviving a rewrite — is the price of not using a path allowlist.
+#
+# Every entry below is the same fabricated string: AWS's own published example access key, used as
+# bait to prove the write-path secrets gate rejects it. The literal is deliberately not written out
+# here. It exists only in the commits named below and nowhere in the working tree.
 
-# Two more of the same fabricated sample, from cc590bf — where it appeared in the *comments* of the
-# two files meant to keep it out. Removed from the tree in the next commit; pinned here because a
-# commit cannot be edited, only rewritten. That it happened at all is the argument for the
-# pre-commit hook: `gitleaks detect` reads history, so checking before you commit checks nothing.
-cc590bf4c53541df4ddf56e9495751162701ef99:.gitleaksignore:aws-access-token:7
-cc590bf4c53541df4ddf56e9495751162701ef99:tests/support/fake_credentials.py:aws-access-token:11
+# A preserved review artifact, before its literals were split.
+10ecb2f0586f2934c673078db422164124553b8a:review/round1/test_adversarial.py:aws-access-token:230
+10ecb2f0586f2934c673078db422164124553b8a:review/round1/test_adversarial.py:aws-access-token:233
+
+# The comments of the two files whose job is keeping the literal out. Removed in the next commit.
+de4792b13c67bbdc5cc89166e6f5cfaa619dd796:.gitleaksignore:aws-access-token:7
+de4792b13c67bbdc5cc89166e6f5cfaa619dd796:tests/support/fake_credentials.py:aws-access-token:11
