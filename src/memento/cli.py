@@ -1,9 +1,21 @@
-"""Operator controls (ADR D5/D8): `view`, `edit`, `forget` are first-class verbs, not admin scripts.
+"""Operator controls (ADR D5/D8), and the whole write path for a consumer with no Python.
 
-Memory the operator cannot inspect and correct is memory they have to trust blindly, so these are
-part of the engine rather than something each consumer reinvents. Every write here goes through the
-same event log and the same gates as a consolidation — `forget` is honored *because* it writes a
-tombstone, not because the CLI is privileged.
+Memory the operator cannot inspect and correct is memory they have to trust blindly, so `view`,
+`edit` and `forget` are part of the engine rather than something each consumer reinvents. Every
+write here goes through the same event log and the same gates as a consolidation — `forget` is
+honored *because* it writes a tombstone, not because the CLI is privileged.
+
+The second consumer class is an **agent**: markdown and a shell, no import statement anywhere. It
+needs more than operator controls — it needs the session lifecycle too (`journal`, `enqueue`,
+`pending`, `claim`/`release`, `commit`), because for that consumer this CLI *is* the API. What it
+does not get is a weaker engine: the gates, the compare-and-swap and the drain gate all apply
+through the shell exactly as they apply to a library caller. See `docs/agent-consumers.md`.
+
+Exit codes are part of that contract — an agent branches on them:
+
+    0  fine        3  gates rejected it     5  the store moved underneath it (redrive)
+    1  usage/IO    4  secrets                6  another claimant holds the session
+                                             7  the drain gate refuses: not yet
 """
 
 from __future__ import annotations
@@ -17,17 +29,28 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import backup as backup_mod
+from .adoption import check_adoption
 from .backup import enable_backup, is_enabled, read_config
 from .clock import SystemClock
-from .errors import GateFailure, MementoError, SecretsDetected, StaleProposal
+from .drain import DrainGate
+from .errors import ClaimHeld, GateFailure, MementoError, SecretsDetected, StaleProposal
 from .forgetting import document_revisions, forget_fact, rollback_document, tombstone
 from .gates import Proposal
+from .locking import DEFAULT_CLAIM_TTL, CasClaim
 from .queue import Queue
 from .readpath import assemble_prefix, recall
 from .spec import load_adapter
 from .store import SCHEMA_VERSION, MemoryStore
 from .templates import preamble
+from .tokenizer import DEFAULT_COUNTER
 from .writepath import UNCHECKED, apply_consolidation, facts_fingerprint, read_facts, read_tombstones
+
+EXIT_GATE_REJECTED = 3
+EXIT_SECRETS = 4
+EXIT_STALE = 5
+EXIT_CLAIM_HELD = 6
+EXIT_DRAIN_REFUSED = 7
 
 
 def _session_id() -> str:
@@ -112,7 +135,21 @@ def cmd_facts(args: argparse.Namespace) -> int:
     adapter, code = _adapter_or_report(args, required=False)
     if code is not None:
         return code
-    facts = read_facts(store, adapter)
+    if args.from_store:
+        # Read the projected documents back into facts and prove the round-trip first. On a store
+        # the engine did not write, that proof is the difference between an anti-erosion baseline
+        # and a confident misreading of the operator's own memory.
+        if adapter is None:
+            print("--from-store needs --adapter-file or --adapter", file=sys.stderr)
+            return 1
+        report = check_adoption(store, adapter)
+        for flag in report.flags:
+            print(f"FLAG: {flag.render()}", file=sys.stderr)
+        if not report.ok:
+            return 1
+        facts = report.facts
+    else:
+        facts = read_facts(store, adapter)
     if args.fingerprint:
         # The compare-and-swap token. Read it, compose a proposal against these facts, then hand it
         # back to `consolidate --expect` — which is what stops a second writer's work being
@@ -186,23 +223,194 @@ def cmd_consolidate(args: argparse.Namespace) -> int:
             proposal,
             session=args.session,
             batch=args.batch,
+            # Given a queue, a rejection marks the session deferred instead of vanishing into an
+            # exit code — the same bookkeeping the drain does, and what keeps the backlog FLAG
+            # honest for a consumer whose whole write path is this command.
+            queue=Queue(args.queue) if args.queue else None,
             expected_fingerprint=UNCHECKED if args.unchecked else args.expect,
         )
     except GateFailure as exc:
         print("REJECTED — nothing was written.", file=sys.stderr)
         for violation in exc.violations:
             print(f"  {violation.render()}", file=sys.stderr)
-        return 3
+        return EXIT_GATE_REJECTED
     except SecretsDetected as exc:
         print(f"REJECTED — secrets: {exc}", file=sys.stderr)
-        return 4
+        return EXIT_SECRETS
     except StaleProposal as exc:
         print(f"REJECTED — {exc}", file=sys.stderr)
-        return 5
+        return EXIT_STALE
 
     print(f"wrote documents: {', '.join(result.documents_written)}")
     if result.streams_written:
         print(f"wrote streams:   {', '.join(result.streams_written)}")
+    return 0
+
+
+# --------------------------------------------------- the session lifecycle, from a shell
+
+
+def _queue(args: argparse.Namespace) -> Queue:
+    return Queue(args.queue)
+
+
+def cmd_journal(args: argparse.Namespace) -> int:
+    """Append this turn's material, or print what has accumulated.
+
+    The journal is the raw pile a consolidation is later distilled *from*. An agent writes to it as
+    the session runs and reads it back at consolidation time — which is the only reason the material
+    survives a session at all.
+    """
+    queue = _queue(args)
+    if args.show:
+        for record in queue.read_journal(args.session):
+            print(json.dumps(record, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.text is None:
+        print("journal needs --text (or - for stdin), or --show", file=sys.stderr)
+        return 1
+    text = sys.stdin.read() if args.text == "-" else args.text
+    queue.append_turn(args.session, args.turn, {"text": text})
+    return 0
+
+
+def cmd_enqueue(args: argparse.Namespace) -> int:
+    """Session exit, and the whole of it (ADR D3.2).
+
+    No distillation here, no git, nothing slow — an exit that does real work is an exit the operator
+    waits on. Everything expensive happens later, behind the `pending --gate-check` gate.
+    """
+    _queue(args).close_and_enqueue(args.session)
+    print(f"enqueued {args.session}; consolidate it later, after `pending --gate-check` passes")
+    return 0
+
+
+def cmd_pending(args: argparse.Namespace) -> int:
+    """What is waiting, how stale it is — and whether a consolidation may start at all.
+
+    `--gate-check` is the shell's half of `DrainGate`: the same two preconditions the spawning
+    parent applies to a drain subprocess, applied to an agent that is about to do the same work in
+    its own turn. Consolidating while the read prefix is still being assembled tears the composite
+    read, and one-session-stale is fine where inconsistent is not.
+    """
+    queue = _queue(args)
+    pending = queue.pending_sessions()
+
+    if args.gate_check:
+        gate = DrainGate(
+            prefix_materialized=args.prefix_materialized,
+            idle_seconds=args.idle_seconds,
+            min_idle_seconds=args.min_idle_seconds,
+        )
+        refusal = gate.refusal()
+        if refusal is not None:
+            print(f"REFUSED — {refusal}", file=sys.stderr)
+            return EXIT_DRAIN_REFUSED
+
+    backlog = queue.backlog()
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "pending": [
+                        {"session": p.session, "enqueued_at": p.enqueued_at, "deferrals": p.deferrals}
+                        for p in pending
+                    ],
+                    "backlog": {
+                        "count": backlog.pending,
+                        "oldest_age_days": backlog.oldest_age_days,
+                        "breached": backlog.breached,
+                        "reason": backlog.reason,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    for item in pending:
+        deferred = f"  deferrals={item.deferrals}" if item.deferrals else ""
+        print(f"{item.session}  enqueued_at={item.enqueued_at:.0f}{deferred}")
+    if not pending:
+        print("nothing pending")
+    if backlog.message():
+        # Deferred must never mean forgotten (ADR D3.5). This is that surface, for a consumer whose
+        # only view of the queue is this command.
+        print(f"FLAG: {backlog.message()}", file=sys.stderr)
+    return 0
+
+
+def cmd_done(args: argparse.Namespace) -> int:
+    """Write the `consolidated` marker — LAST, after the write and after any commit.
+
+    Marker-LAST is the crash-safety invariant: a crash before it means the session is still pending
+    and gets re-run, and re-running a consolidation is cheap where losing one is not. So this is its
+    own verb rather than a side effect of `consolidate`, which would put it *before* the commit.
+    """
+    queue = _queue(args)
+    if not queue.is_enqueued(args.session):
+        print(f"{args.session} was never enqueued", file=sys.stderr)
+        return 1
+    queue.mark_consolidated(args.session)
+    print(f"marked {args.session} consolidated")
+    return 0
+
+
+def cmd_claim(args: argparse.Namespace) -> int:
+    """Take the session, and print the token that gives it back.
+
+    Held across process boundaries on purpose — an agent's consolidation spans several invocations
+    with the model's own thinking in between, and a claim that released when this command exited
+    would let a second front-end pay for the same consolidation.
+    """
+    store = MemoryStore(args.store)
+    claim = CasClaim(store.locks_dir, args.session, ttl=args.ttl)
+    try:
+        record = claim.acquire()
+    except ClaimHeld as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CLAIM_HELD
+    print(record.token)
+    return 0
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    store = MemoryStore(args.store)
+    claim = CasClaim(store.locks_dir, args.session)
+    try:
+        released = claim.release(args.token)
+    except ClaimHeld as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CLAIM_HELD
+    print(f"released {args.session}" if released else f"{args.session} was not claimed")
+    return 0
+
+
+def cmd_commit(args: argparse.Namespace) -> int:
+    """Commit — and by default push — a consolidation on a backup-enabled store (ADR D3.4/D8).
+
+    The drain does this for a library consumer. An agent consolidates in its own process, so without
+    this verb a store that opted into backup would accumulate consolidations that never leave the
+    machine. Attribution is the consolidated session's, never a later one's.
+    """
+    store = MemoryStore(args.store)
+    if not is_enabled(store):
+        # Not an error: backup is opt-in, and a store that did not opt in is in a state its owner
+        # chose. Failing here would make every session on such a store end in a non-zero exit, which
+        # is how a shell loop learns to stop reading exit codes.
+        print("backup is not enabled for this store; nothing to commit")
+        return 0
+    sha = backup_mod.commit_consolidation(store, args.session)
+    print(f"committed {sha}" if sha else "nothing to commit")
+    if args.push:
+        # Best-effort, exactly as in the drain: a remote being down must never look like a lost
+        # write. The store is the record; git is a copy of it.
+        try:
+            pushed = backup_mod.push(store)
+        except MementoError as exc:
+            print(f"FLAG: backup push failed: {exc}", file=sys.stderr)
+            return 1
+        print("pushed" if pushed else "no remote configured; committed locally only")
     return 0
 
 
@@ -266,14 +474,60 @@ def cmd_forget(args: argparse.Namespace) -> int:
 
 
 def cmd_recall(args: argparse.Namespace) -> int:
+    """Selective recall, bounded by count *and* by cost.
+
+    An agent pastes this straight into its own context, so `--limit` alone is not a bound: ten hits
+    over a long stream is an unpredictable amount of text. The budget comes from the adapter unless
+    the caller overrides it, and what the budget cut is reported rather than dropped quietly.
+    """
     store = MemoryStore(args.store)
-    hits = recall(store, args.query, limit=args.limit)
-    if not hits:
+    adapter, code = _adapter_or_report(args, required=False)
+    if code is not None:
+        return code
+    budget = args.budget if args.budget is not None else getattr(adapter, "recall_budget_tokens", None)
+    result = recall(
+        store,
+        args.query,
+        limit=args.limit,
+        streams=args.stream or None,
+        keys=args.key or None,
+        since=args.since,
+        until=args.until,
+        budget=budget,
+        counter=getattr(adapter, "token_counter", DEFAULT_COUNTER),
+    )
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "hits": [
+                        {
+                            "source": h.source,
+                            "location": h.location,
+                            "entry_id": h.entry_id,
+                            "text": h.text,
+                            "score": h.score,
+                            "ts": h.ts,
+                        }
+                        for h in result.hits
+                    ],
+                    "tokens": result.tokens,
+                    "budget": result.budget,
+                    "counter": result.counter,
+                    "dropped": result.dropped,
+                    "flags": [f.render() for f in result.flags],
+                },
+                indent=2,
+            )
+        )
+        return 0
+    for flag in result.flags:
+        print(f"FLAG: {flag.render()}", file=sys.stderr)
+    if not result.hits:
         print("no matches")
         return 0
-    for hit in hits:
-        where = f"{hit.location}:{hit.entry_id}" if hit.entry_id else hit.location
-        print(f"[{hit.score}] {where}  {hit.text}")
+    for hit in result.hits:
+        print(hit.render())
     return 0
 
 
@@ -314,6 +568,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("facts", help="print the structured facts behind the documents")
     p.add_argument("--fingerprint", action="store_true", help="print only the compare-and-swap token")
+    p.add_argument(
+        "--from-store",
+        action="store_true",
+        help="parse the projected documents back into facts; refuses if the bytes do not round-trip",
+    )
     _adapter_args(p)
     p.set_defaults(func=cmd_facts)
 
@@ -327,6 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--proposal", required=True, help="path to a proposal JSON, or - for stdin")
     p.add_argument("--session", required=True)
     p.add_argument("--batch", default="consolidate")
+    p.add_argument("--queue", default=None, help="mark the session deferred if this is rejected")
     group = p.add_mutually_exclusive_group(required=True)
     group.add_argument("--expect", help="fingerprint from `facts --fingerprint`")
     group.add_argument(
@@ -336,6 +596,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _adapter_args(p)
     p.set_defaults(func=cmd_consolidate)
+
+    p = sub.add_parser("journal", help="append this turn's material, or print what accumulated")
+    p.add_argument("session")
+    p.add_argument("--queue", required=True)
+    p.add_argument("--turn", type=int, default=0)
+    p.add_argument("--text", default=None, help="the turn's material, or - for stdin")
+    p.add_argument("--show", action="store_true", help="print the journal instead of appending")
+    p.set_defaults(func=cmd_journal)
+
+    p = sub.add_parser("enqueue", help="session exit: close the journal and mark it pending")
+    p.add_argument("session")
+    p.add_argument("--queue", required=True)
+    p.set_defaults(func=cmd_enqueue)
+
+    p = sub.add_parser("pending", help="what is waiting, and whether consolidation may start")
+    p.add_argument("--queue", required=True)
+    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--gate-check",
+        action="store_true",
+        help="refuse (exit 7) unless the drain gate's preconditions hold",
+    )
+    p.add_argument("--idle-seconds", type=float, default=0.0)
+    p.add_argument("--min-idle-seconds", type=float, default=5.0)
+    p.add_argument("--prefix-materialized", action="store_true")
+    p.set_defaults(func=cmd_pending)
+
+    p = sub.add_parser("done", help="write the consolidated marker — last, after commit")
+    p.add_argument("session")
+    p.add_argument("--queue", required=True)
+    p.set_defaults(func=cmd_done)
+
+    p = sub.add_parser("claim", help="claim a session's consolidation; prints the release token")
+    p.add_argument("session")
+    p.add_argument("--ttl", type=float, default=DEFAULT_CLAIM_TTL)
+    p.set_defaults(func=cmd_claim)
+
+    p = sub.add_parser("release", help="give a claimed session back")
+    p.add_argument("session")
+    p.add_argument("--token", required=True)
+    p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("commit", help="commit and push a consolidation on a backup-enabled store")
+    p.add_argument("--session", required=True)
+    p.add_argument("--no-push", dest="push", action="store_false", default=True)
+    p.set_defaults(func=cmd_commit)
 
     p = sub.add_parser("history", help="revisions of a document")
     p.add_argument("document")
@@ -360,6 +666,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recall", help="search events and documents")
     p.add_argument("query")
     p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--budget", type=int, default=None, help="token ceiling; adapter's if unset")
+    p.add_argument("--stream", action="append", default=[], help="restrict to a stream; repeatable")
+    p.add_argument("--key", action="append", default=[], help="restrict to an entry id; repeatable")
+    p.add_argument("--since", default=None, help="ISO-8601 lower bound on an entry's last-seen time")
+    p.add_argument("--until", default=None, help="ISO-8601 upper bound")
+    p.add_argument("--json", action="store_true")
+    _adapter_args(p)
     p.set_defaults(func=cmd_recall)
 
     p = sub.add_parser("backup", help="opt this store into git backup")

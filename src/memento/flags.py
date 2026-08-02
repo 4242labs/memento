@@ -19,6 +19,8 @@ WRITE_FAILED = "write-failed"
 BACKLOG = "backlog"
 STALE_CLAIM = "stale-claim"
 PREFIX_TRUNCATED = "prefix-truncated"
+RECALL_TRUNCATED = "recall-truncated"
+ADOPTION_DIVERGED = "adoption-diverged"
 ROLLBACK_UNAVAILABLE = "rollback-unavailable"
 
 

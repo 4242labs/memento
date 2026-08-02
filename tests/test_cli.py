@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from memento.cli import main
 from memento.writepath import read_facts, read_tombstones
 
@@ -114,3 +116,20 @@ def test_backup_enables_with_the_acknowledgement(seeded, capsys):
 def test_prompts_prints_the_pinned_templates(seeded, capsys):
     main(["--store", str(seeded.root), "prompts"])
     assert "Reference the past sparingly" in capsys.readouterr().out
+
+
+def test_recall_on_the_cli_takes_a_budget_and_reports_the_cut(seeded, capsys):
+    main(["--store", str(seeded.root), "recall", "lighthouses", "--budget", "3", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["tokens"] <= 3
+    assert payload["dropped"] > 0
+    assert payload["flags"]
+
+
+def test_recall_on_the_cli_filters_by_stream(seeded, capsys):
+    main(["--store", str(seeded.root), "recall", "suis", "--stream", "errors/fr", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["hits"]
+    assert {h["location"] for h in payload["hits"]} == {"errors/fr"}

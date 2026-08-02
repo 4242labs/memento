@@ -148,6 +148,19 @@ class Queue:
                 continue
         return iter(records)
 
+    def is_enqueued(self, session: str) -> bool:
+        """Whether this session was ever closed and enqueued.
+
+        Not the same as "its directory exists": journaling a turn creates that directory too, so a
+        session that was written to but never closed would otherwise look enqueued — and could be
+        marked consolidated without a consolidation ever having been owed.
+        """
+        validate_session_id(session)
+        return any(
+            rec.get("session") == session and rec.get("record") == REC_ENQUEUED
+            for rec in self._pending_records()
+        )
+
     def pending_sessions(self) -> list[PendingSession]:
         """Enqueued and not yet marked consolidated, oldest first."""
         first_seen: dict[str, float] = {}

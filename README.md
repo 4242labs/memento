@@ -98,11 +98,26 @@ memento --store ./memory history profile.md
 memento --store ./memory rollback profile.md
 memento --store ./memory edit profile.md
 memento --store ./memory forget languages/de --adapter app.memory:ADAPTER
-memento --store ./memory recall kites
+memento --store ./memory recall kites --since 2026-07-01T00:00:00Z --budget 400
 memento --store ./memory backup --remote git@github.com:you/private-store.git --yes
 ```
 
 `forget` writes a tombstone; nothing in this engine deletes an event.
+
+### Agent consumers
+
+The second consumer class is an agent — markdown and a shell, no Python. For it the CLI *is* the
+API, and the whole session lifecycle is there: `journal` → `enqueue` → `pending --gate-check` →
+`claim` → `prefix` → `consolidate` → `commit` → `done` → `release`. Same gates, same
+compare-and-swap, same floor; the agent is simply the distiller as well as the writer.
+
+```bash
+memento --store ./memento pending --queue ./q --gate-check --idle-seconds 30 --prefix-materialized
+TOKEN=$(memento --store ./memento claim 260802-1400)
+memento --store ./memento facts --from-store --adapter-file ./adapter.json   # adoption: bytes win
+```
+
+Full contract, exit codes included: [`docs/agent-consumers.md`](./docs/agent-consumers.md).
 
 ### Store layout
 

@@ -21,6 +21,7 @@ Authority for every decision here is `adr-260731-memento-founding.md` in this re
 from __future__ import annotations
 
 from .adapter import Adapter, PrefixSection
+from .adoption import AdoptionReport, check_adoption
 from .backup import BackupConfig, commit_consolidation, enable_backup, is_enabled, push
 from .clock import Clock, FrozenClock, SystemClock
 from .drain import DrainGate, DrainReport, Distiller, backlog_flag, run_drain, spawn_drain
@@ -49,10 +50,10 @@ from .forgetting import (
     tombstone,
 )
 from .gates import FieldSpec, Proposal, RuleSet, StoreState, Violation
-from .locking import SessionClaim, StoreLock
+from .locking import CasClaim, CasClaimRecord, SessionClaim, StoreLock
 from .queue import Queue, RetentionPolicy
-from .readpath import PrefixResult, RecallHit, assemble_prefix, recall
-from .spec import adapter_from_spec, load_adapter
+from .readpath import PrefixResult, RecallHit, RecallResult, assemble_prefix, recall
+from .spec import adapter_from_spec, facts_from_documents, load_adapter
 from .store import SCHEMA_VERSION, DocumentWrite, MemoryStore
 from .tokenizer import HeuristicCounter, TokenCounter
 from .writepath import (
@@ -67,10 +68,13 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Adapter",
+    "AdoptionReport",
     "BackupConfig",
     "BackupError",
     "BudgetError",
     "ClaimHeld",
+    "CasClaim",
+    "CasClaimRecord",
     "Clock",
     "CorruptStoreError",
     "Distiller",
@@ -95,6 +99,7 @@ __all__ = [
     "Proposal",
     "Queue",
     "RecallHit",
+    "RecallResult",
     "RetentionPolicy",
     "RuleSet",
     "SCHEMA_VERSION",
@@ -113,12 +118,14 @@ __all__ = [
     "adapter_from_spec",
     "apply_consolidation",
     "assemble_prefix",
+    "check_adoption",
     "backlog_flag",
     "commit_consolidation",
     "current_state",
     "facts_fingerprint",
     "document_revisions",
     "enable_backup",
+    "facts_from_documents",
     "fold",
     "forget_fact",
     "is_enabled",

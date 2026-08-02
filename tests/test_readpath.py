@@ -165,3 +165,112 @@ def test_recall_ignores_the_engine_area(seeded):
 def test_recall_ordering_is_deterministic(store):
     _grow(store, 20)
     assert recall(store, "kites term 3", limit=8) == recall(store, "kites term 3", limit=8)
+
+
+# ------------------------------------------------- recall: budget and filters (B-02 T6)
+
+
+def test_a_recall_budget_bounds_the_answer_by_cost_not_just_by_count(store, adapter):
+    """`--limit` bounds how many hits come back; it does not bound how much text they are.
+
+    An agent pastes recall output into its own context, so the number that matters is tokens. Ten
+    hits over a long stream is not a bounded amount of prompt.
+    """
+    _grow(store, 40)
+    unbounded = recall(store, "kites term", limit=25)
+    assert len(unbounded) == 25
+
+    result = recall(store, "kites term", limit=25, budget=60, counter=adapter.token_counter)
+    assert result.tokens <= 60
+    assert len(result) < len(unbounded)
+    assert result.dropped == len(unbounded) - len(result)
+
+
+def test_what_the_budget_cut_is_reported_never_dropped_quietly(store, adapter):
+    _grow(store, 40)
+    result = recall(store, "kites term", limit=25, budget=60, counter=adapter.token_counter)
+
+    assert result.truncated
+    assert result.flags and "budget" in result.flags[0].message
+    assert result.counter == "memento.heuristic.v1"
+
+
+def test_the_budget_cuts_the_least_relevant_end_deterministically(store, adapter):
+    """Ordered by score before the cut, so the same query keeps the same answer."""
+    _grow(store, 40)
+    first = recall(store, "kites term 3", limit=25, budget=80, counter=adapter.token_counter)
+    second = recall(store, "kites term 3", limit=25, budget=80, counter=adapter.token_counter)
+
+    assert first.hits == second.hits
+    scores = [h.score for h in first]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_a_budget_without_a_counter_is_refused(store):
+    with pytest.raises(BudgetError, match="token counter"):
+        recall(store, "kites", budget=50)
+
+
+def test_a_budget_may_not_be_counted_over_the_network(store):
+    class Remote:
+        name = "remote-counter"
+        is_local = False
+
+        def count(self, text):  # pragma: no cover - never reached
+            raise AssertionError("the read path made a network call")
+
+    _grow(store, 5)
+    with pytest.raises(BudgetError, match="not local"):
+        recall(store, "kites", budget=50, counter=Remote())
+
+
+def test_recall_filters_to_named_streams(store):
+    _grow(store, 5)
+    hits = recall(store, "term", streams=["vocab/kites"])
+    assert hits and all(h.location == "vocab/kites" for h in hits)
+
+
+def test_recall_filters_to_named_entry_ids(store):
+    _grow(store, 5)
+    hits = recall(store, "term", keys=["kites-2"])
+    assert [h.entry_id for h in hits] == ["kites-2"]
+
+
+def test_recall_filters_by_date_range(store, clock):
+    """ISO-8601 sorts in time order, so the range compare is a string compare and nothing else."""
+    store.append("vocab/fr", [{"id": "old", "item": "kites long ago"}], session="s1", batch="b1")
+    clock.advance(30 * 86400)
+    boundary = clock.now_iso()
+    clock.advance(86400)
+    store.append("vocab/fr", [{"id": "new", "item": "kites recently"}], session="s2", batch="b2")
+
+    assert [h.entry_id for h in recall(store, "kites", since=boundary)] == ["new"]
+    assert [h.entry_id for h in recall(store, "kites", until=boundary)] == ["old"]
+    assert len(recall(store, "kites")) == 2
+
+
+def test_an_entry_with_no_timestamp_is_outside_every_range(store, clock):
+    """Outside every range, never inside all of them — a missing stamp is not a wildcard."""
+    (store.root / "vocab").mkdir(parents=True, exist_ok=True)
+    (store.root / "vocab" / "pt.jsonl").write_text(
+        '{"id": "undated", "event": "entry", "item": "kites"}\n', encoding="utf-8"
+    )
+    assert recall(store, "kites")
+    assert recall(store, "kites", since="2000-01-01T00:00:00Z") == []
+
+
+def test_a_date_ranged_recall_leaves_the_projected_documents_out(seeded):
+    """A document is the *current* state and carries no per-line history.
+
+    Including one in a time-ranged answer would date it to whenever the reader happened to look,
+    which is a worse answer than no answer.
+    """
+    assert any(h.source == "document" for h in recall(seeded, "lighthouses"))
+    ranged = recall(seeded, "lighthouses", since="2000-01-01T00:00:00Z")
+    assert all(h.source == "event" for h in ranged)
+
+
+def test_an_event_carries_the_timestamp_the_filters_read(store):
+    store.append("vocab/fr", [{"id": "v1", "item": "kites"}], session="s1", batch="b1")
+    (hit,) = recall(store, "kites")
+    assert hit.ts and hit.ts.endswith("Z")

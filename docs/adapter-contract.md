@@ -89,8 +89,9 @@ memento --store ./memento/clu consolidate --adapter-file adapter.json \
 
 **A declared adapter gets the same engine.** The spec builds an ordinary `Adapter`, so the secrets
 gate, schema, ordered scales and the anti-erosion floor all apply unchanged. Exit codes are the
-contract: `3` gates rejected (every violation printed), `4` secrets, `5` stale proposal. Nothing is
-written on any of them.
+contract: `3` gates rejected (every violation printed), `4` secrets, `5` stale proposal, `6` the
+session is claimed by another front-end, `7` the drain gate refuses. Nothing is written on any of
+them.
 
 Two things a spec cannot do, deliberately: ship a custom `Rule` (that is arbitrary code), and supply
 its own `render_documents`. The engine renders instead — mappings sorted by key, list members sorted
@@ -98,7 +99,19 @@ by the identity the floor addresses them with — because a declarative consumer
 determinism the contract requires and a renderer that reorders rows makes the history unreadable.
 
 An unknown key in a spec is refused rather than ignored: a typo that silently disables the gate it
-was meant to declare is worse than no gate at all.
+was meant to declare is worse than no gate at all. That applies inside a field spec too —
+`{"type": "str", "requried": true}` is a refusal, not a field that quietly checks nothing.
+
+**A spec may tighten a gate; it may never widen one**, and an attempt is refused at *load*:
+
+| Key | Tightens by |
+|:--|:--|
+| `pattern` in a field spec | a regex **string** constraining the field's text — the declarative sibling of `check`, which stays code-only |
+| `ordered_scale_steps` | lowering a scale's per-consolidation movement. `0` freezes it; anything above the engine's limit of `1` is refused |
+| `required_members` | naming members that must survive **even with a tombstone** — stricter than the floor, which allows any explicitly retired drop |
+
+The full lifecycle a declared consumer drives from a shell — journal, enqueue, the mandatory drain
+gate check, the claim, submit, commit, marker — is [`docs/agent-consumers.md`](agent-consumers.md).
 
 The `--expect` fingerprint is the same compare-and-swap the library requires, carried across the
 shell boundary. Read it with `facts --fingerprint`, submit with it, and a proposal derived from a
@@ -255,6 +268,16 @@ without it. Use that sparingly; it converts a degraded read into a failed one.
 query — a query matching nothing returns nothing rather than the nearest thing lying around. Retired
 entries are excluded unless you ask for them.
 
+Bounded two ways, and they answer different questions. `limit` bounds **how many** hits come back;
+`budget` (with the adapter's `token_counter`, or declared as `recall_budget_tokens`) bounds what
+they **cost**. The second is the one that matters for a consumer pasting hits into a prompt: ten
+hits over a long stream is not a bounded amount of text. Truncation cuts the least-relevant end,
+deterministically, and raises a `recall-truncated` FLAG — it is never silent.
+
+Filters narrow what is eligible at all: `streams`, `documents`, `keys`, and `since`/`until` on
+ISO-8601 timestamps. A date-ranged recall searches events only — a projected document is the current
+state with no per-line history, so including it would date it to whenever the reader looked.
+
 The archive is never bulk-loaded. If you find yourself calling `recall` with a huge limit to
 assemble context, that belongs in the prefix instead, under the budget.
 
@@ -326,13 +349,26 @@ standing between "adoption" and "one free erosion".
 Verify the round trip before you ship:
 
 ```python
-assert render_documents(facts_from_store(store)) == {
-    "profile.md": store.read_document("profile.md"),
-    "interests.md": store.read_document("interests.md"),
-}
+from memento import check_adoption
+
+report = check_adoption(store, adapter)
+assert report.ok, report.message()      # `report.diverged` names the documents that did not
 ```
 
-If that fails, adoption is a migration, whatever it is called.
+If that fails, adoption is a migration, whatever it is called. **The bytes win**: `check_adoption`
+writes nothing, FLAGs `adoption-diverged`, and leaves the store exactly as it found it. Re-projecting
+an operator's own memory to match a renderer is the operator's call, never a consolidation's.
+
+A **declared** adapter gets `facts_from_store` for free — the engine ships the inverse of its own
+renderer, driven by the spec. It has to be type-directed rather than a byte-level inverse, because
+the renderer stringifies scalars and spells booleans `yes`/`no`, so the types can only come from the
+declared `schema`. The one thing markdown genuinely cannot say is whether labelled bullets are a
+mapping or a list of identified members; `collections` declares that, and a `list` must name an
+`identity_key` the floor can address. Run it with:
+
+```bash
+memento --store ./memento facts --from-store --adapter-file ./adapter.json   # exit 1 on divergence
+```
 
 ---
 

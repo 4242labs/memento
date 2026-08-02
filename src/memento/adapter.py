@@ -44,11 +44,20 @@ class Adapter:
     prefix_budget_tokens: int = 2000
     prefix_sections: Sequence[PrefixSection] = ()
     recall_limit: int = 8
+    # A ceiling on what recall may *cost*, distinct from how many hits it returns. An agent that
+    # pastes recall output into its own context is spending prompt budget on it, and ten hits over
+    # a long stream is not a bounded amount of text. None means bounded by count alone.
+    recall_budget_tokens: int | None = None
 
     # --- write path
     schema: Mapping[str, FieldSpec] = field(default_factory=dict)
     entry_schema: Mapping[str, FieldSpec] = field(default_factory=dict)
     ordered_scales: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    # Per-scale movement limits, and members that must survive every consolidation. Both tighten the
+    # floor: a step above the engine's own is clamped back down, and declaring neither leaves the
+    # floor exactly as it was.
+    ordered_scale_steps: Mapping[str, int] = field(default_factory=dict)
+    required_members: Mapping[str, Sequence[str]] = field(default_factory=dict)
     rules: Sequence[Rule] = ()
     # Field names the floor uses to address list members. Widen it when your taxonomy identifies
     # members some other way (`lang`, `code`, `label`) — a member the floor cannot address is a
@@ -60,6 +69,10 @@ class Adapter:
     # --- projection
     render_documents: Callable[[dict[str, Any]], dict[str, str]] = lambda facts: {}
     facts_from_store: Callable[[Any], dict[str, Any]] | None = None
+    # Which documents this adapter claims to project. Declaring them is what lets adoption tell "a
+    # file we render nothing for" — a store this adapter cannot reproduce — from "a file that is
+    # simply not ours", which is every other file under the store root.
+    projected_documents: Sequence[str] = ()
 
     # --- policy
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
@@ -67,7 +80,7 @@ class Adapter:
 
     def rule_set(self) -> RuleSet:
         """Floor first, adapter rules after. Composition is the only extension point by design."""
-        from .gates import DerivedIdentityRule, EntrySchemaRule, SchemaRule
+        from .gates import DerivedIdentityRule, EntrySchemaRule, RequiredMembersRule, SchemaRule
 
         keys = tuple(self.identity_keys)
         declared: list[Rule] = []
@@ -81,5 +94,12 @@ class Adapter:
                     entry_id=self.derive_entry_id, facts=self.derived_facts, identity_keys=keys
                 )
             )
+        if self.required_members:
+            declared.append(RequiredMembersRule(self.required_members, identity_keys=keys))
         declared.extend(self.rules)
-        return RuleSet(declared, ordered_scales=self.ordered_scales, identity_keys=keys)
+        return RuleSet(
+            declared,
+            ordered_scales=self.ordered_scales,
+            identity_keys=keys,
+            ordered_scale_steps=self.ordered_scale_steps,
+        )

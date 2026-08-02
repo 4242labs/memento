@@ -36,6 +36,10 @@ dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.2", "hatchling>=1.25"]
 # against the very code they were written to guard, and nothing caught it. This is what catches it.
 #
 # Scoped to the modules where a silent pass is a data-loss bug — the write gates, the event log, the
-# store, and the lock protocol. Run it with `python -m tools.mutation`.
-source_paths = ["src/memento/gates.py", "src/memento/events.py", "src/memento/store.py", "src/memento/locking.py"]
-also_copy = ["tests/", "pyproject.toml", "src/memento/prompts/"]
+# store and the lock protocol, plus the queue, read path, spec, adoption and CLI that B-02 made
+# load-bearing for a consumer with no Python of its own. Run it with `uv run mutmut run`.
+source_paths = ["src/memento/gates.py", "src/memento/events.py", "src/memento/store.py", "src/memento/locking.py", "src/memento/queue.py", "src/memento/readpath.py", "src/memento/cli.py", "src/memento/spec.py", "src/memento/drain.py", "src/memento/adoption.py"]
+# The whole package, not just the mutated modules: mutmut copies only what is listed
+# here, and a partial copy means the suite dies on the first cross-module import rather than
+# running against a mutant. README.md is needed because the wheel-build test builds from this copy.
+also_copy = ["tests/", "pyproject.toml", "README.md", "src/memento/"]
