@@ -24,6 +24,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+#: The whole module is the acceptance tier: every test here drives real subprocesses. It runs in CI
+#: and in a plain `pytest`; the mutation runner skips it (B-02 T8 R3) and covers the same command
+#: layer in-process, where a mutant dies in milliseconds instead of seconds.
+pytestmark = pytest.mark.acceptance
+
 SPEC = {
     "name": "agent-fixture",
     "prefix_budget_tokens": 400,

@@ -212,9 +212,17 @@ def test_a_store_this_renderer_cannot_reproduce_is_flagged_not_rewritten(jubs_la
 
 
 def test_facts_from_store_on_the_cli_refuses_a_divergent_store(jubs_layout, spec_file, capsys):
-    code = main(["--store", str(jubs_layout.root), "facts", "--from-store", "--adapter-file", spec_file])
+    """Asserted on the contract — exit code and `--json` payload — not on the console prose."""
+    code = main([
+        "--store", str(jubs_layout.root), "facts", "--from-store",
+        "--adapter-file", spec_file, "--json",
+    ])
+    payload = json.loads(capsys.readouterr().out)
+
     assert code == 1
-    assert "adoption-diverged" in capsys.readouterr().err
+    assert payload["ok"] is False
+    assert payload["diverged"] == ["operator.md"]
+    assert any("adoption-diverged" in flag for flag in payload["flags"])
 
 
 def test_facts_from_store_on_the_cli_prints_the_facts_when_the_bytes_agree(projected, spec_file, capsys):

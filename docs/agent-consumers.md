@@ -16,6 +16,33 @@ it imports and executes whatever the reference names.
 
 ---
 
+## What is promised, and what is not
+
+Two things are contractual. One is not, and the difference is the whole reason this section exists.
+
+| Surface | Promise |
+|:--|:--|
+| **The exit code** | Contractual. Branch on it. The table below is exhaustive and pinned by `tests/test_exit_codes.py` |
+| **`--json`** | Contractual. Every verb below takes it. The payload is complete on its own — including any error — so you never have to read stderr to learn what happened. It always carries `ok`, which agrees with the exit code by construction |
+| **Console prose** | **Not contractual.** Messages are free to be reworded, reordered, or dropped between versions. Parsing them is relying on something this project does not promise |
+
+So: **pass `--json` and read the payload.** The human output exists for the operator reading a
+terminal, and it lives in a separate module (`presentation.py`) precisely so that nothing in it can
+change what a consumer depends on.
+
+```bash
+memento --store ./memento pending --queue ./memento/.queue --json
+```
+```json
+{
+  "ok": true,
+  "backlog": {"breached": false, "count": 1, "message": null, "oldest_age_days": 0.4, "reason": null},
+  "pending": [{"deferrals": 0, "enqueued_at": 1785680834.0, "session": "260802-140000"}]
+}
+```
+
+---
+
 ## The loop
 
 Two halves, and the split between them is the point. Session exit does the cheap half. Everything
@@ -24,7 +51,7 @@ expensive happens later, behind a gate.
 ### During the session
 
 ```bash
-memento --store ./memento journal $SESSION --queue ./memento/.queue --text "what just happened"
+memento --store ./memento journal $SESSION --queue ./memento/.queue --text "what just happened" --json
 ```
 
 Append per-turn material as you go. This is the pile a consolidation is later distilled *from*; it
@@ -33,7 +60,7 @@ is the only reason anything survives the session at all.
 ### At session exit — this and nothing else
 
 ```bash
-memento --store ./memento enqueue $SESSION --queue ./memento/.queue
+memento --store ./memento enqueue $SESSION --queue ./memento/.queue --json
 ```
 
 No distillation, no git, nothing slow (ADR D3.2). An exit that does real work is an exit the
@@ -46,32 +73,36 @@ Next session start, or an idle moment. **In this order.**
 ```bash
 # 1. THE GATE CHECK — MANDATORY. Never skip it, never work around a refusal.
 memento --store ./memento pending --queue ./memento/.queue --gate-check \
-        --idle-seconds "$IDLE" --prefix-materialized                  # exit 7 = not yet
+        --idle-seconds "$IDLE" --prefix-materialized --json           # exit 7 = not yet
 
 # 2. Claim the session. Keep the token; it is the right to release it.
-TOKEN=$(memento --store ./memento claim $SESSION)                     # exit 6 = someone else has it
+TOKEN=$(memento --store ./memento claim $SESSION --json | jq -r .token)   # exit 6 = someone has it
 
 # 3. Read: the current state, the raw material, and the compare-and-swap baseline.
-memento --store ./memento prefix --adapter-file ./adapter.json
-memento --store ./memento journal $SESSION --queue ./memento/.queue --show
-FP=$(memento --store ./memento facts --fingerprint --adapter-file ./adapter.json)
+memento --store ./memento prefix --adapter-file ./adapter.json --json     # .text, .tokens, .flags
+memento --store ./memento journal $SESSION --queue ./memento/.queue --show --json   # .turns
+FP=$(memento --store ./memento facts --fingerprint --adapter-file ./adapter.json --json | jq -r .fingerprint)
 
 # 4. Distill. This is you. Write a proposal JSON.
 
 # 5. Submit it through the gates. All-or-nothing.
 memento --store ./memento consolidate --adapter-file ./adapter.json \
         --proposal ./proposal.json --session $SESSION \
-        --queue ./memento/.queue --expect "$FP"
+        --queue ./memento/.queue --expect "$FP" --json                # .violations on exit 3
 
 # 6. Back it up, if this store opted in.
-memento --store ./memento commit --session $SESSION
+memento --store ./memento commit --session $SESSION --json            # .sha, .pushed
 
 # 7. The marker, LAST.
-memento --store ./memento done $SESSION --queue ./memento/.queue
+memento --store ./memento done $SESSION --queue ./memento/.queue --json
 
 # 8. Give the claim back.
-memento --store ./memento release $SESSION --token "$TOKEN"
+memento --store ./memento release $SESSION --token "$TOKEN" --json
 ```
+
+Every step above takes `--json`, and every payload carries `ok`. Branch on the exit code first; read
+the payload for the detail — `.violations` when the gates refuse, `.flags` when something was
+truncated or deferred, `.error` for the one-line reason.
 
 ### Why the gate check is mandatory
 
@@ -104,14 +135,18 @@ Branch on these. They are the contract.
 |:--|:--|:--|
 | `0` | fine | continue |
 | `1` | usage, I/O, or a refused adoption | fix the invocation; do not retry blind |
-| `3` | **the gates rejected it** — nothing was written | read the violations on stderr, fix the proposal, resubmit. With `--queue`, the session is already marked deferred |
+| `2` | **malformed input** — the proposal is not JSON, or not an object | fix the file. Distinct from `3`: nothing was even parsed, let alone gated |
+| `3` | **the gates rejected it** — nothing was written | read `.violations` from the payload, fix the proposal, resubmit. With `--queue`, the session is already marked deferred |
 | `4` | **secrets** — a credential-shaped string tried to enter the store | never retry as-is. Remove it. The store is not the place for it |
 | `5` | **stale** — the store moved while you were thinking | re-read `facts --fingerprint`, redrive the proposal against the new state. This is a normal outcome, not an error |
 | `6` | **claimed** — another front-end holds this session | skip it and move on. Do not force it |
 | `7` | **the drain gate refuses** — too soon | come back later |
 
 Exit 3 and exit 5 mean opposite things. Exit 3 is *your proposal is wrong*; exit 5 is *your proposal
-was fine and somebody else got there first*.
+was fine and somebody else got there first*. Exit 2 is neither: it never reached the gates.
+
+The codes are exhaustive and pinned — `tests/test_exit_codes.py` holds one row per scenario, and a
+verb without a row is a hole that file exists not to have.
 
 ---
 
@@ -256,6 +291,7 @@ no per-line history, so including one would date it to whenever you happened to 
 ## What an agent does not get
 
 * **`--adapter module:attribute`.** It imports and executes code. Use `--adapter-file`.
+* **A promise about console text.** Prose is not contractual; `--json` and the exit code are.
 * **A way to skip the gate check.** Exit 7 means later, not louder.
 * **A weaker floor.** Every write goes through the same gates as jubs'.
 * **Deletion.** `forget` writes a tombstone. Nothing in this engine deletes an event.

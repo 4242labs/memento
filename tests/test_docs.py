@@ -46,7 +46,8 @@ def _invocations(text: str) -> list[str]:
             line = capture.group("inner")
         if not line.startswith("memento "):
             continue
-        command = line.strip()
+        # Pipelines are shell, not CLI: check the `memento` half and let the rest be the reader's.
+        command = line.split("|")[0].strip()
         if " ... " in f" {command} ":
             continue  # a deliberately elided example in prose, not a copyable invocation
         out.append(command)
@@ -90,6 +91,9 @@ def test_every_documented_exit_code_is_one_the_cli_can_return():
         )
     }
     emitted = {
+        cli.EXIT_OK,
+        cli.EXIT_USAGE,
+        cli.EXIT_MALFORMED,
         cli.EXIT_GATE_REJECTED,
         cli.EXIT_SECRETS,
         cli.EXIT_STALE,
@@ -97,5 +101,7 @@ def test_every_documented_exit_code_is_one_the_cli_can_return():
         cli.EXIT_DRAIN_REFUSED,
     }
 
-    assert emitted <= documented, f"undocumented exit codes: {sorted(emitted - documented)}"
-    assert documented - emitted == {0, 1}, "the table documents a code nothing returns"
+    assert documented == emitted, (
+        f"undocumented: {sorted(emitted - documented)}; "
+        f"documented but never returned: {sorted(documented - emitted)}"
+    )

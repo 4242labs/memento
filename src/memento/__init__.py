@@ -24,6 +24,7 @@ from .adapter import Adapter, PrefixSection
 from .adoption import AdoptionReport, check_adoption
 from .backup import BackupConfig, commit_consolidation, enable_backup, is_enabled, push
 from .clock import Clock, FrozenClock, SystemClock
+from .commands import Outcome
 from .drain import DrainGate, DrainReport, Distiller, backlog_flag, run_drain, spawn_drain
 from .errors import (
     BackupError,
@@ -94,6 +95,7 @@ __all__ = [
     "LockTimeout",
     "MementoError",
     "MemoryStore",
+    "Outcome",
     "PrefixResult",
     "PrefixSection",
     "Proposal",
