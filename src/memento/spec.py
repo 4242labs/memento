@@ -438,8 +438,43 @@ def _required_members(raw: Mapping[str, Any]) -> dict[str, list[str]]:
     return out
 
 
+#: What one entry under `documents` may say, and what one `prefix_sections` entry may say. Both are
+#: refused on an unknown key for the same reason the top-level spec is: a misspelled `sectons` is a
+#: document that silently never renders, forever, with no error on any surface.
+DOCUMENT_KEYS = {"title", "sections"}
+PREFIX_SECTION_KEYS = {"name", "priority", "document", "required"}
+
+
+def _entry(raw: Any, allowed: set[str], where: str) -> Mapping[str, Any]:
+    """One nested spec entry, checked for shape and for keys nobody declared."""
+    if not isinstance(raw, Mapping):
+        raise MementoError(f"{where}: expected an object, got {type(raw).__name__}")
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise MementoError(
+            f"{where}: unknown key(s): {', '.join(unknown)}; "
+            f"expected one of {', '.join(sorted(allowed))}"
+        )
+    return raw
+
+
+def _int(spec: Mapping[str, Any], key: str, default: int) -> int:
+    value = spec.get(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise MementoError(f"{key}: expected a number, got {value!r}") from exc
+
+
 def adapter_from_spec(spec: Mapping[str, Any]) -> Adapter:
-    """Build an `Adapter` from a declared spec. Unknown keys are refused, never ignored."""
+    """Build an `Adapter` from a declared spec. Unknown keys are refused, never ignored.
+
+    Every refusal here is a `MementoError`, which is what the CLI turns into a contract exit code.
+    A spec is user input on the one path an agent consumer is required to use, so a typo in it must
+    never arrive as a `KeyError` traceback with an empty `--json` payload.
+    """
+    if not isinstance(spec, Mapping):
+        raise MementoError("a spec must be a JSON object")
     known = {
         "name",
         "prefix_budget_tokens",
@@ -465,19 +500,26 @@ def adapter_from_spec(spec: Mapping[str, Any]) -> Adapter:
         raise MementoError("a spec must declare a name")
 
     identity_keys = tuple(spec.get("identity_keys", DEFAULT_IDENTITY_KEYS))
-    documents = dict(spec.get("documents", {}))
+    documents = {
+        name: _entry(raw, DOCUMENT_KEYS, f"documents.{name}")
+        for name, raw in dict(spec.get("documents", {})).items()
+    }
 
     sections = []
-    for raw in spec.get("prefix_sections", []):
-        document = raw.get("document")
+    for index, raw in enumerate(spec.get("prefix_sections", [])):
+        where = f"prefix_sections[{index}]"
+        entry = _entry(raw, PREFIX_SECTION_KEYS, where)
+        document = entry.get("document")
         if document is None:
-            raise MementoError(f"prefix section {raw.get('name')!r} must name a document")
+            raise MementoError(f"prefix section {entry.get('name')!r} must name a document")
+        if entry.get("name") is None:
+            raise MementoError(f"{where}: must have a name")
         sections.append(
             PrefixSection(
-                name=str(raw["name"]),
-                priority=int(raw.get("priority", 0)),
+                name=str(entry["name"]),
+                priority=_int(entry, "priority", 0),
                 render=(lambda doc: lambda store: store.read_document(doc) or "")(document),
-                required=bool(raw.get("required", False)),
+                required=bool(entry.get("required", False)),
             )
         )
 
@@ -486,13 +528,15 @@ def adapter_from_spec(spec: Mapping[str, Any]) -> Adapter:
     collections = _collections(dict(spec.get("collections", {})), identity_keys)
     retention = dict(spec.get("retention", {}))
     return Adapter(
-        name=str(spec["name"]),
+        name=str(spec["name"]),  # validated above
         token_counter=HeuristicCounter(),
-        prefix_budget_tokens=int(spec.get("prefix_budget_tokens", 2000)),
+        prefix_budget_tokens=_int(spec, "prefix_budget_tokens", 2000),
         prefix_sections=tuple(sections),
-        recall_limit=int(spec.get("recall_limit", 8)),
+        recall_limit=_int(spec, "recall_limit", 8),
         recall_budget_tokens=(
-            int(spec["recall_budget_tokens"]) if spec.get("recall_budget_tokens") is not None else None
+            _int(spec, "recall_budget_tokens", 0)
+            if spec.get("recall_budget_tokens") is not None
+            else None
         ),
         schema=schema,
         entry_schema={
@@ -520,7 +564,13 @@ def adapter_from_spec(spec: Mapping[str, Any]) -> Adapter:
 
 
 def load_adapter(path: str | Path) -> Adapter:
-    """Load a declared adapter from a JSON file."""
+    """Load a declared adapter from a JSON file.
+
+    Every failure leaves here as a `MementoError` naming the file. A spec is user input on the one
+    path an agent consumer is required to use, and a typo in it arriving as a bare `KeyError` gives
+    that consumer a traceback where the contract promised an exit code and a payload — so the
+    conversion below is a backstop for anything the field-by-field checks did not anticipate.
+    """
     text = Path(path).read_text(encoding="utf-8")
     try:
         spec = json.loads(text)
@@ -528,4 +578,9 @@ def load_adapter(path: str | Path) -> Adapter:
         raise MementoError(f"{path}: not valid JSON ({exc})") from exc
     if not isinstance(spec, dict):
         raise MementoError(f"{path}: a spec must be a JSON object")
-    return adapter_from_spec(spec)
+    try:
+        return adapter_from_spec(spec)
+    except MementoError as exc:
+        raise MementoError(f"{path}: {exc}") from exc
+    except (KeyError, ValueError, TypeError, AttributeError, IndexError) as exc:
+        raise MementoError(f"{path}: malformed spec ({type(exc).__name__}: {exc})") from exc

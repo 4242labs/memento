@@ -85,12 +85,18 @@ def _session_id() -> str:
 
 
 def _resolve(ref: str | None) -> Any:
+    """Resolve `module:attribute`. A bad reference is a usage error, not a traceback."""
     if not ref:
         return None
     import importlib
 
     module_name, _, attr = ref.partition(":")
-    obj = getattr(importlib.import_module(module_name), attr)
+    if not attr:
+        raise MementoError(f"expected 'module:attribute', got {ref!r}")
+    try:
+        obj = getattr(importlib.import_module(module_name), attr)
+    except (ImportError, AttributeError) as exc:
+        raise MementoError(f"cannot resolve adapter {ref!r}: {exc}") from exc
     return obj() if isinstance(obj, type) else obj
 
 

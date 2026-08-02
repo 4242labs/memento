@@ -228,3 +228,67 @@ def test_declaring_none_of_it_leaves_the_floor_exactly_as_it_was(store):
             store, adapter, Proposal(facts=eroded), session="s2", batch="b2",
             expected_fingerprint=facts_fingerprint(read_facts(store, adapter)),
         )
+
+
+# ================================ a malformed spec is a refusal, never a traceback
+
+# The adversarial review's CRITICAL-1. A spec file is user input on the ONE path an agent consumer
+# is required to use (`--adapter-file`), and every one of these arrived as a bare Python traceback
+# with an empty `--json` payload — which makes "branch on the exit code" a promise the CLI did not
+# keep, on exactly the surface this block exists to make safe.
+
+
+@pytest.mark.parametrize(
+    "spec,expected",
+    [
+        ({"name": "x", "prefix_sections": [{"document": "a.md", "priority": 0}]}, "must have a name"),
+        ({"name": "x", "prefix_sections": ["not-an-object"]}, "expected an object"),
+        ({"name": "x", "prefix_sections": [{"name": "p", "document": "a.md", "prioriti": 0}]}, "unknown key"),
+        ({"name": "x", "prefix_budget_tokens": "lots"}, "expected a number"),
+        ({"name": "x", "recall_limit": "many"}, "expected a number"),
+        ({"name": "x", "documents": {"o.md": {"title": "O", "sectons": ["operator"]}}}, "unknown key"),
+        ({"name": "x", "documents": {"o.md": "just a string"}}, "expected an object"),
+    ],
+    ids=["section-without-a-name", "section-not-an-object", "section-unknown-key",
+         "budget-not-a-number", "limit-not-a-number", "document-unknown-key", "document-not-an-object"],
+)
+def test_a_malformed_spec_is_refused_with_a_readable_error(spec, expected):
+    with pytest.raises(MementoError, match=expected):
+        adapter_from_spec(spec)
+
+
+def test_a_misspelled_sections_key_would_otherwise_silently_disable_the_document():
+    """The specific shape of the harm: `sectons` used to load fine and render nothing, forever.
+
+    Not a crash, not a FLAG, not an exit code — a document that simply never appears, which on a
+    fresh store `check_adoption` cannot catch either because there is nothing on disk to diverge
+    from. It directly contradicts the discipline the adapter contract states out loud.
+    """
+    good = adapter_from_spec({"name": "x", "documents": {"o.md": {"sections": ["operator"]}}})
+    assert good.render_documents({"operator": {"confidence": "high"}})  # renders
+
+    with pytest.raises(MementoError, match="unknown key"):
+        adapter_from_spec({"name": "x", "documents": {"o.md": {"sectons": ["operator"]}}})
+
+
+def test_every_malformed_spec_reaches_the_cli_as_an_exit_code(tmp_path, capsys):
+    """The end of the same story: a refusal the shell can branch on, with a payload to read."""
+    from memento.cli import main
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"name": "x", "prefix_sections": [{"document": "a.md"}]}), encoding="utf-8")
+
+    code = main(["--store", str(tmp_path / "s"), "prefix", "--adapter-file", str(bad), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["ok"] is False
+    assert "must have a name" in payload["error"]
+
+
+def test_an_unresolvable_python_adapter_is_also_an_exit_code(tmp_path, capsys):
+    from memento.cli import main
+
+    assert main(["--store", str(tmp_path / "s"), "prefix", "--adapter", "no.such.module:THING"]) == 1
+    assert main(["--store", str(tmp_path / "s"), "prefix", "--adapter", "memento:NOPE"]) == 1
+    assert main(["--store", str(tmp_path / "s"), "prefix", "--adapter", "no-colon"]) == 1

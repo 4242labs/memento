@@ -28,6 +28,9 @@ class AdoptionReport:
     facts: dict[str, Any] = field(default_factory=dict)
     diverged: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
+    #: Documents the check could not verify at all — the parser recovered nothing to compare them
+    #: against. Distinct from `diverged`, which means "compared, and the bytes differ".
+    unverified: tuple[str, ...] = ()
     flags: tuple[Flag, ...] = ()
 
     @property
@@ -37,6 +40,13 @@ class AdoptionReport:
     def message(self) -> str | None:
         if self.ok:
             return None
+        if self.unverified:
+            return (
+                "this adapter recovered no facts at all from a store that holds "
+                f"{', '.join(self.unverified)}. Adoption cannot be verified, so it is refused: an "
+                "empty baseline is one free erosion on the first consolidation. A declared adapter "
+                "gets a parser for free; a Python one needs `facts_from_store`"
+            )
         return (
             "these documents do not survive a parse/render round-trip: "
             f"{', '.join(self.diverged)}. The store's bytes are authoritative and were left "
@@ -60,6 +70,23 @@ def check_adoption(
     facts = dict(parser(store))
     rendered = dict(adapter.render_documents(facts))
 
+    on_disk = list(store.documents())
+    if on_disk and not facts:
+        # A parser that recovers nothing from a store that plainly holds something has not been
+        # verified — it has been *unable to try*, and every comparison below is then vacuously
+        # equal. Reporting that as adoptable hands the anti-erosion floor an empty baseline, which
+        # is the one free erosion this module exists to prevent. Unverifiable fails closed, exactly
+        # as the floor does (handoff §5.4).
+        report = AdoptionReport(
+            facts={},
+            diverged=tuple(on_disk),
+            unverified=tuple(on_disk),
+        )
+        sink.raise_flag(ADOPTION_DIVERGED, report.message() or "")
+        return AdoptionReport(
+            facts={}, diverged=report.diverged, unverified=report.unverified, flags=tuple(sink.flags)
+        )
+
     # Everything the renderer produced, plus every document the adapter *claims* to project that is
     # already on disk. The second half is the load-bearing one: a document the renderer produces
     # nothing for is the sharpest divergence there is — re-projection would blank a file the
@@ -70,13 +97,13 @@ def check_adoption(
     diverged: list[str] = []
     missing: list[str] = []
     for name in sorted(names):
-        on_disk = store.read_document(name)
-        if on_disk is None:
+        content = store.read_document(name)
+        if content is None:
             # The renderer produces a document the store does not have yet. That is ordinary on an
             # empty or partial store, and it is not a divergence: nothing is being overwritten.
             missing.append(name)
             continue
-        if rendered.get(name) != on_disk:
+        if rendered.get(name) != content:
             diverged.append(name)
 
     report = AdoptionReport(

@@ -294,24 +294,37 @@ def test_the_cas_claim_excludes_across_processes(agent):
     assert "HELD" in second.stderr
 
 
+#: How many independent races the probe runs. One round caught an unguarded claim about 15 times in
+#: 16 — which means one run in 16 was a false pass on the single test that proves `CasClaim` beats a
+#: naive process-scoped claim. Rounds are independent, so three of them put a false pass at roughly
+#: one in four thousand: this is the flakiness fix, and it is deliberately not "add a retry".
+RACE_ROUNDS = 3
+
+
 def test_two_concurrent_processes_contend_and_exactly_one_wins(agent):
     """The race, run as a race rather than in sequence — six processes, one claim, one instant."""
     agent("status")
-    start_at = time.time() + 1.2  # every interpreter is up and waiting before any of them tries
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        results = list(
-            pool.map(lambda _: _claim_in_a_subprocess(agent.store, SESSION, start_at=start_at), range(6))
-        )
+    for round_number in range(RACE_ROUNDS):
+        session = f"260802-14100{round_number}"
+        start_at = time.time() + 1.2  # every interpreter is up and waiting before any of them tries
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(
+                pool.map(
+                    lambda _: _claim_in_a_subprocess(agent.store, session, start_at=start_at),
+                    range(6),
+                )
+            )
 
-    # Every outcome must be one of the two the contract names. An unguarded read-modify-write does
-    # not merely double-claim — it tears the claim file and the losers die on the way in, which
-    # would otherwise read as "only one winner" and pass.
-    assert all(r.returncode in (0, 6) for r in results), [r.stderr for r in results]
-    winners = [r for r in results if r.returncode == 0]
-    losers = [r for r in results if r.returncode == 6]
-    assert len(winners) == 1, f"{len(winners)} processes claimed the same session"
-    assert len(losers) == 5
-    assert all("HELD" in r.stderr for r in losers)
+        where = f"round {round_number}"
+        # Every outcome must be one of the two the contract names. An unguarded read-modify-write
+        # does not merely double-claim — it tears the claim file and the losers die on the way in,
+        # which would otherwise read as "only one winner" and pass.
+        assert all(r.returncode in (0, 6) for r in results), (where, [r.stderr for r in results])
+        winners = [r for r in results if r.returncode == 0]
+        losers = [r for r in results if r.returncode == 6]
+        assert len(winners) == 1, f"{where}: {len(winners)} processes claimed the same session"
+        assert len(losers) == 5, where
+        assert all("HELD" in r.stderr for r in losers), where
 
 
 def test_the_claim_verb_refuses_a_release_under_the_wrong_token(agent):

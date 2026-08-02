@@ -207,7 +207,7 @@ def test_a_store_this_renderer_cannot_reproduce_is_flagged_not_rewritten(jubs_la
 
     assert not report.ok
     assert "operator.md" in report.diverged
-    assert report.flags and "authoritative" in report.flags[0].message
+    assert report.flags and report.flags[0].kind == "adoption-diverged"
     assert jubs_layout.read_document("operator.md") == JUBS_PROFILE, "the store's bytes must be untouched"
 
 
@@ -289,3 +289,43 @@ def test_an_unlabelled_member_keeps_its_body(tmp_path, adapter):
         collections={"practice": {"kind": "list", "identity_key": "topic"}},
     )
     assert recovered["practice"] == [{"weight": "high"}]
+
+
+def test_a_parser_that_recovers_nothing_is_refused_rather_than_believed(tmp_path):
+    """The adversarial review's CRITICAL-2. Unverifiable must fail closed, as the floor does.
+
+    A Python-authored adapter leaves `projected_documents` empty — the adapter contract's own
+    minimum example never sets it — so the comparison below had nothing to compare and reported
+    `ok=True` with `facts={}`. That is precisely the "one free erosion" this module exists to
+    prevent: the first consolidation would be judged against an empty baseline, and an empty
+    baseline cannot be eroded.
+    """
+    from memento import Adapter
+
+    store = MemoryStore(tmp_path / "python-adapter")
+    store.initialize()
+    store.replace_document("profile.md", "# Profile\n\n- name: Alice\n", session="s", batch="b")
+
+    blind = Adapter(
+        name="python-authored",
+        render_documents=lambda facts: {"profile.md": "..."} if facts.get("profile") else {},
+        facts_from_store=lambda store: {},  # recovers nothing at all
+    )
+
+    report = check_adoption(store, blind)
+    assert not report.ok
+    assert report.unverified == ("profile.md",)
+    assert report.facts == {}
+    assert "one free erosion" in (report.message() or "")
+    assert store.read_document("profile.md") == "# Profile\n\n- name: Alice\n"
+
+
+def test_an_empty_store_with_an_empty_parse_is_still_fine(tmp_path):
+    """The control: nothing on disk means nothing to fail to verify."""
+    from memento import Adapter
+
+    store = MemoryStore(tmp_path / "empty")
+    store.initialize()
+    blind = Adapter(name="x", render_documents=lambda f: {}, facts_from_store=lambda s: {})
+
+    assert check_adoption(store, blind).ok
