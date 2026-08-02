@@ -4,7 +4,7 @@
 
 An LLM has anterograde amnesia: total memory loss between sessions. MEMENTO is the annotated Polaroids and tattoos — a shared engine any 42labs product attaches to remember, and build a relationship with, *its* operator/user.
 
-**One engine, N independent memories.** Shared code, never shared data: each consumer project runs its own instance against its own isolated store (a git-ignored `memory/` directory inside that project's app repo). No central service, no compartments.
+**One engine, N independent memories.** Shared code, never shared data: each consumer project runs its own instance against its own isolated store (a git-ignored `memento/` directory inside that project's app repo). No central service, no compartments.
 
 ## Design
 
@@ -43,7 +43,7 @@ Full adapter reference: [`docs/adapter-contract.md`](./docs/adapter-contract.md)
 ```python
 from memento import MemoryStore, DocumentWrite
 
-store = MemoryStore("./memory")            # store_root IS the namespace; there is no tenancy seam
+store = MemoryStore("./memento")           # store_root IS the namespace; there is no tenancy seam
 
 store.append("errors/fr", [{"id": "fr-x", "pattern": "je suis 20 ans"}],
              session="260731-1354", batch="consolidation")   # idempotent on (session, batch)
@@ -92,14 +92,14 @@ across the model call, `consolidated` marker written last.
 ### Operator verbs
 
 ```bash
-memento --store ./memory status
-memento --store ./memory view profile.md
-memento --store ./memory history profile.md
-memento --store ./memory rollback profile.md
-memento --store ./memory edit profile.md
-memento --store ./memory forget languages/de --adapter app.memory:ADAPTER
-memento --store ./memory recall kites --since 2026-07-01T00:00:00Z --budget 400
-memento --store ./memory backup --remote git@github.com:you/private-store.git --yes
+memento --store ./memento status
+memento --store ./memento view profile.md
+memento --store ./memento history profile.md
+memento --store ./memento rollback profile.md
+memento --store ./memento edit profile.md
+memento --store ./memento forget languages/de --adapter app.memory:ADAPTER
+memento --store ./memento recall kites --since 2026-07-01T00:00:00Z --budget 400
+memento --store ./memento backup --remote git@github.com:you/private-store.git --yes
 ```
 
 `forget` writes a tombstone; nothing in this engine deletes an event.
@@ -131,7 +131,10 @@ Full contract, exit codes included: [`docs/agent-consumers.md`](./docs/agent-con
     objects/  locks/
 ```
 
-Byte-compatible with today's `jubs-memory`: adoption moves a path, not data.
+Byte-compatible with today's `jubs-memory`: adoption moves a path, not data. The default
+directory is `memento/` (ADR amendment A1, operator 2026-08-02) — a default, not a
+requirement: `store_root` is whatever the consumer passes, and the engine hard-codes neither
+name.
 
 ## Status
 

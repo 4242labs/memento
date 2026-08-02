@@ -100,6 +100,23 @@ Retirement is an *event* (D2); tombstoned entries remain visible to the fold (ju
 
 **ADR SIGNED by these decisions — next step: scope Phase A (clean-room engine build) into blocks/cards.**
 
+### Amendment A1 — store directory name (operator, 2026-08-02)
+
+**Signed off by the operator on 2026-08-02: "yes, standardize as `memento`".** This amends the
+*Store placement* decision above, which was otherwise settled at signature; nothing else in §5 moves.
+
+- The default store directory is **`memento/`**, not `memory/`. Everything else about the decision
+  stands: git-ignored, inside each app repo, zero additional repos, git only on push opt-in.
+- **Root-anchoring is the load-bearing half, not the name.** The pattern is `/memento/` — anchored —
+  because a bare `memento/` would untrack a source package named `memento` at any depth, including
+  this engine's own `src/memento/`. That is the same trap `/memory/` was anchored against in review
+  round 5; renaming without anchoring would reintroduce it in a worse place.
+- **Nothing on disk has to move.** `store_root` is a path the consumer passes; the engine has never
+  hard-coded either name. `/memory/` stays in this repo's `.gitignore` for stores that predate the
+  rename.
+- jubs' own move (`jubs-app/memory/` → `jubs-app/memento/`) is **separately operator-gated** and is
+  not covered by this amendment.
+
 ## 6. Review record
 
 **Rounds 5–6 (2026-07-31, same reviewer):** round 5, on the v5 store-placement fold — 5 MAJOR / 3 minor (projected-document history via `document_replaced`, owned `jubs-memory` retirement + remote fate, conditional-git everywhere incl. 06-01 `dbc722d`, `/memory/` root-anchoring, cooperative-auditability note) → v6. Round 6, on v6 — 8/8 resolved, **VERDICT: FIT for operator signature**; 3 spec-detail minors folded immediately (large-doc pointer must resolve to a retained content-addressed area or rollback is knowingly unavailable; provenance-exemption rationale restated via `document_replaced` accountability; idempotency key `(session, batch, document, ordinal)` + no-duplicate-on-re-run test).

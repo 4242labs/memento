@@ -6,7 +6,7 @@ instance against its own isolated store. There is no central service and no mult
 
 The short version of the shape:
 
-    store = MemoryStore("./memory")          # plain files, git-ignored by the app repo
+    store = MemoryStore("./memento")         # plain files, git-ignored by the app repo
     prefix = assemble_prefix(store, adapter) # budgeted, always-loaded core
     hits = recall(store, "kites")            # selective; the archive is never bulk-loaded
 
