@@ -247,6 +247,16 @@ def _rebuild(
     members: list[Any] = []
     for bullet in bullets:
         if bullet.label is None:
+            if bullet.children:
+                # A member the renderer could not label — it carries no identity the engine
+                # recognises. The floor refuses to *write* one, so this only ever comes from a
+                # document written by something else; reading its body back as an empty string
+                # would drop it silently, and adoption is the one place that must not.
+                # Descend under an empty member key, so its body is read the same way a labelled
+                # member's is — `practice.*.weight` matches either. Recursing on `path` itself would
+                # re-enter the *list* and turn the body's first field into a new member.
+                members.append(_rebuild(bullet.children, path + ("",), schema, collections))
+                continue
             child_path = path + (bullet.value or "",)
             members.append(_coerce(bullet.value or "", _declared_for(schema, child_path)))
             continue

@@ -253,3 +253,31 @@ def test_from_store_says_so_when_the_adapter_cannot_parse_documents(projected, c
     ])
     assert code == 1
     assert "cannot parse documents back into facts" in capsys.readouterr().err
+
+
+def test_an_unlabelled_member_keeps_its_body(tmp_path, adapter):
+    """A member with no identity the engine recognises still must not read back as nothing.
+
+    The floor refuses to *write* one — `membership()` reports it and the proposal is rejected — so
+    this can only arrive in a document written by something else. Adoption is precisely the case
+    where "something else wrote it" is the premise, and dropping the body would be a silent loss
+    where a divergence FLAG was the whole promise.
+    """
+    from memento.spec import facts_from_documents
+
+    store = MemoryStore(tmp_path / "unlabelled")
+    store.initialize()
+    store.replace_document(
+        "practice.md",
+        "# Practice\n\n## practice\n-\n  - **weight**: high\n",
+        session="seed",
+        batch="seed",
+    )
+
+    recovered = facts_from_documents(
+        store,
+        {"practice.md": {"sections": ["practice"]}},
+        schema={},
+        collections={"practice": {"kind": "list", "identity_key": "topic"}},
+    )
+    assert recovered["practice"] == [{"weight": "high"}]
