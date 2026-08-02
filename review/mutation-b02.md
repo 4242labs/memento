@@ -1,8 +1,8 @@
 # B-02 mutation record
 
-**T8's honest answer: the "no new survivors" gate is NOT met.** The numbers, the triage, and what
-was done about them are below. An untriaged survivor list rots into noise, so this file exists to
-keep the list readable rather than to make it look better.
+Post-split state, under the architect's T8 amendment (memento `765a360`). The earlier version of
+this file reported the original gate as **not met**; that finding is what the amendment answers, and
+what follows is measured against the amended gate.
 
 ## What could not be measured before
 
@@ -12,68 +12,98 @@ copied tree held five modules out of nineteen and the suite died on the first cr
 files tests actually read were missing too: `README.md` (the wheel-build test builds from the copy),
 `.gitignore` and `docs/` (the store-pattern and documented-invocation regressions read them).
 
-Fixed in `pyproject.toml`. The A-01 figures reproduce almost exactly once it runs — `gates` 234 vs
-235, `store` 90 vs 89, `events` 84 vs 88, `locking` 33 vs 33 — so the handoff's 445 was real, and
-this branch did not erode it.
+Fixed in `pyproject.toml`. The A-01 figures reproduce once it runs — `gates` 232 vs 235, `store` 90
+vs 89, `events` 84 vs 88 — so the handoff's 445 was real, and this branch did not erode it.
 
-## Pre-block baseline vs now
+## The ratchet boundary is architectural
 
-Baseline: `main` @ `2b5c9de`, the five modules A-01 never measured.
-Now: this branch, ten modules, 4899 mutants.
+`presentation.py` and `cli.py` carry no `source_paths` entry, and that is a **boundary, not an
+exclusion list**:
 
-| Module | Baseline | Now | Δ |
-|:--|--:|--:|--:|
-| `cli` | 342 | 583 | **+241** |
-| `spec` | 179 | 232 | **+53** |
-| `readpath` | 88 | 111 | **+23** |
-| `adoption` | — | 11 | **+11** (new module) |
-| `drain` | 69 | 68 | −1 |
-| `queue` | 60 | 60 | 0 |
-| `gates` | 235 (A-01) | 234 | −1 |
-| `store` | 89 (A-01) | 90 | +1 |
-| `events` | 88 (A-01) | 84 | −4 |
-| `locking` | 33 (A-01) | 33 | 0 |
-| **Total** | | **1506** | |
+* Everything a consumer may depend on — the exit code and the `--json` payload — is decided in
+  `commands.py`, which is in scope.
+* `presentation.py` holds human-facing strings and nothing else. Its renderers never decide a code,
+  never touch the store, and never print. A mutant there cannot change a promise.
+* `cli.py` is argparse and dispatch.
 
-Killed 2907, no test at all 465.
+If a mutant in a non-scope module could ever alter a promise, the split is wrong — not the ratchet.
+That is a cheaper invariant to hold than a list somebody has to keep in sync.
 
-## Triage of the 1075 survivors in the six modules this block touched
+## R3: the kill mechanism is in-process, and it is what made this affordable
 
-Classified mechanically (`- ` line vs `+ ` line, ignoring the renamed `def`):
+`tests/test_agent_loop.py` is marked `acceptance`; `MEMENTO_MUTATION=1 uv run mutmut run` drops it
+from the per-mutant runner. Before that, every `cli.py` mutant paid for dozens of interpreter
+starts: the sweep ran at **2.4 mutations/second** and stalled for hours in that region. The
+in-process contract table covers the same ground and a mutant dies in milliseconds.
 
-| Class | Count | What it means |
-|:--|--:|:--|
-| output-only | 417 | The mutation changes only what is *printed* — a message string, or `print(f"…")` → `print(None)`. Killing these means asserting exact console text |
-| exit-code | 60 → **39** | `return 0` → `return 1` and friends. **This class matters**: `docs/agent-consumers.md` tells an agent to branch on the number |
-| other behavioural | 605 | Argument defaults, sentinel comparisons, branch inversions in paths no test distinguishes |
-| no-op | 4 | Mutant and original are identical after formatting |
+The acceptance tier still runs in CI and in a plain `pytest` — it is what proves the loop composes
+across real process boundaries, which no in-process test can.
 
-## What was done
+## Post-split baseline — the number the ratchet works from
 
-The **exit-code** class was the one worth paying for, and 21 of them are now dead: every verb's
-success code is asserted, and the malformed-proposal path is pinned to exit 2 so it cannot drift
-into 3, which means something else entirely. The renderer's identity ordering was also unguarded —
-the existing shuffle test passed against an identity lookup returning nothing at all, because the
-`str(member)` tie-break reproduces the same order by accident. Both fixes were verified by breaking
-the code and watching the test fail first (handoff §5.1).
+4435 mutants, 2926 killed, 117 with no test, **1333 survivors**.
 
-The remaining 39 exit-code survivors are in `--json` formatting and in `drain`/`readpath` internals
-where the returned number is discarded by every caller.
+| Module | In ratchet scope | Survivors |
+|:--|:--|--:|
+| `commands` | **yes** | 400 |
+| `spec` | **yes** | 232 |
+| `readpath` | **yes** | 111 |
+| `adoption` | **yes** | 11 |
+| `gates` | yes (A-01) | 232 |
+| `store` | yes (A-01) | 90 |
+| `events` | yes (A-01) | 84 |
+| `drain` | yes (A-01) | 69 |
+| `queue` | yes (A-01) | 59 |
+| `locking` | yes (A-01) | 45 |
+| `presentation`, `cli` | **no — by architecture** | not measured |
 
-## Why the gate is not met, stated plainly
+Recorded in `mutation-survivors-b02.txt`. The pre-block baseline for the five modules A-01 never
+measured is in `mutation-survivors-b02-baseline.txt` (738, `main` @ `2b5c9de`). Both are what
+42L-1239's nightly down-only ratchet should compare against.
 
-`cli.py` roughly doubled — it now carries the whole session lifecycle for a consumer with no Python
-— and it is mostly `argparse` wiring and `print`. Roughly 70% of its survivors are output-only.
-Closing them means asserting console text line by line, which buys a suite that breaks on every
-reworded message and still would not have caught any defect found on this branch.
+## Every exit-code mutant is dead
 
-The mutation sweep is also now **nightly-scale**: 4899 mutants, and `cli.py`'s mutants each run the
-AC-1 subprocess harness. That matches `docs/handoff-a-01.md` §3.3, which already says a per-PR gate
-is the wrong shape for this. Wiring the ratchet — baseline recorded, fail on *new* survivors, drive
-the baseline down — is 42L-1239's, and the two lists in this directory are what it should ratchet
-against.
+The amendment's hard requirement, checked mechanically: a mutant counts if the set of `EXIT_*`
+constants or literal return codes in the function changes. Across all 1333 survivors, **one**
+remains, and it is provably equivalent:
+
+```
+memento.commands._ok
+  - return Outcome(code=EXIT_OK, kind=kind, data={"ok": True, **data})
+  + return Outcome(kind=kind, data={"ok": True, **data})
+```
+
+`Outcome.code` defaults to `EXIT_OK`, so the two forms are the same object. **Marked equivalent.**
+
+Two were real and are now dead. Both were in `cmd_commit`'s push-failure branch, which returned
+success when the write had landed but the backup had not — an agent would have recorded a session
+as safely copied that was not. `tests/test_exit_codes.py` now drives a store with an unreachable
+remote and pins that path to exit 1.
+
+## Equivalent mutants, recorded rather than chased
+
+| Where | Why it is equivalent |
+|:--|:--|
+| `commands._ok` — omitted `code=EXIT_OK` | The dataclass default is `EXIT_OK` |
+| 4 no-ops from the pre-split sweep | Mutant and original are identical after formatting; nothing to kill |
+
+## `locking` — a regression R3 caused, and closed
+
+Excluding the acceptance tier removed the only tests covering `CasClaim`, and `locking` went 33 →
+**91**. That was the ruling working as intended (the acceptance tier is not a mutation runner) and
+the coverage gap it exposed being real. `tests/test_locking.py` now covers the claim in-process —
+record round-trip, torn and partial files, TTL expiry and reclaim, token-checked release, the
+listing — bringing it to **45**. The remaining 12 above A-01's 33 are in `CasClaim._write`'s
+durability calls (`flush`, `fsync`, the temp-file rename), which no test can observe without a
+crash harness.
+
+## Cadence
+
+Two-tier, per the ruling. Per-PR: incremental, changed modules only. Nightly: full sweep, down-only
+against the files in this directory, regressions FLAG and open a card. The nightly is **42L-1239's**
+to build; this ruling is its spec and these baselines are its input.
 
 ## Files
 
-- `mutation-survivors-b02-baseline.txt` — 738, `main` @ `2b5c9de`, five modules
-- `mutation-survivors-b02.txt` — 1506, this branch, ten modules
+- `mutation-survivors-b02-baseline.txt` — 738, `main` @ `2b5c9de`, the five previously unmeasured modules
+- `mutation-survivors-b02.txt` — 1333, post-split, ten modules

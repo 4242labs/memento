@@ -200,6 +200,17 @@ def _ok_prompts(world):
     return world.run("prompts")
 
 
+def _usage_push_failed(world):
+    """Backup enabled, remote unreachable. The write landed; the copy did not, and that is a FLAG.
+
+    Left untested this branch returned success: mutation testing found the only two survivors that
+    could still change an exit code, both here.
+    """
+    _seed(world)
+    world.run("backup", "--yes", "--remote", str(world.tmp / "nowhere.git"))
+    return world.run("commit", "--session", "260802-000001")
+
+
 def _usage_missing_adapter(world):
     return world.run("prefix")
 
@@ -318,6 +329,7 @@ CONTRACT = [
     ("done on a session never enqueued", _usage_done_never_enqueued, cli.EXIT_USAGE),
     ("backup without --yes", _usage_backup_without_yes, cli.EXIT_USAGE),
     ("--from-store with no adapter", _usage_from_store_without_adapter, cli.EXIT_USAGE),
+    ("a backup push that fails", _usage_push_failed, cli.EXIT_USAGE),
 
     ("a proposal that is not JSON", _malformed_proposal, cli.EXIT_MALFORMED),
     ("a proposal that is not an object", _malformed_proposal_not_an_object, cli.EXIT_MALFORMED),
