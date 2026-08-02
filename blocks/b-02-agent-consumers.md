@@ -39,8 +39,13 @@ Spec adapters get only the floor; apps can tighten, agents can't. Add a declarat
 ### T7: Store dir rename `memory/` → `memento/` *(gap 5 — engine catches up to shipped reality)*
 **The jubs half already shipped, by the operator personally** (verification pass 2026-08-02): jubs-app `d79326b` / v1.4.1 / ADR rev 10, operator-authored, store at `jubs-app/memento/` with a root-anchored `/memento/` — that commit **is** the jubs-side sign-off; nothing further is gated there. What remains is the engine half: default store dir becomes `memento/`, and because the memento founding ADR lists store placement under §5 **"ALL SETTLED — not up for review"** (still reading `memory/`), the amendment **requires explicit operator sign-off before it ships** — the jubs precedent argues for it but does not substitute for it. Load-bearing detail unchanged: the trap fix is **root-anchoring**, not the name — the new default pattern is `/memento/` and an AC asserts it.
 
-### T8: Mutation coverage on the new code *(gap 6)*
-**First establish a pre-block mutmut baseline** for every module this block touches that A-01 never measured (`queue`, `readpath`, `cli`, `spec`, `drain` — only gates/store/events/locking have baselines; review minor-10). Then: no new survivors on any new/changed module before merge. The pre-existing 445 stay 42L-1239.
+### T8: Mutation coverage on the new code *(gap 6 — AMENDED 2026-08-02, post-measurement architect ruling; supersedes the original gate)*
+Measurement finding accepted: `[tool.mutmut] also_copy` was broken on main (5/19 modules copied — no mutant ever ran); the fix ships with this block. A-01's figures reproduce; the pre-existing survivors stay 42L-1239. The gate is now:
+
+- **R1 — the CLI contract is machine-readable, not prose.** Split `cli.py`: a **command layer** (parse → engine call → exit code + structured result) and a **presentation layer** (all human-facing message rendering, own module). Every agent-contract verb gains `--json`; `docs/agent-consumers.md` rewrites the loop against `--json` + exit codes and marks console prose explicitly non-contractual.
+- **R2 — ratchet scope by module boundary, never by mutant-class filter.** Re-baseline after the split, then: **no new survivors** vs the committed pre-block baseline on command layer, `spec`, `readpath`, `adoption`; **ALL exit-code mutants dead regardless of baseline** (agents branch on 3/4/5 — enforced by a parametrized scenario→exit-code contract table, in-process). The presentation module is out of ratchet scope **by architecture** — a documented boundary, not a hand-maintained exclusion list. The 4 no-op mutants: mark equivalent, don't chase.
+- **R3 — kill mechanism is in-process.** Mutation tests invoke command functions directly; the AC-1 subprocess harness remains end-to-end acceptance only, never the per-mutant runner (this collapses the per-mutant cost).
+- **R4 — cadence is two-tier.** Per-PR: incremental sweep, changed modules only. Full sweep: nightly against the committed survivor baselines (`review/`), down-only ratchet, regressions FLAG + card. That design belongs to **42L-1239** — this ruling is its spec; commit the baselines here, build the nightly there.
 
 ## Acceptance Criteria
 
@@ -52,8 +57,8 @@ Spec adapters get only the floor; apps can tighten, agents can't. Add a declarat
 | AC-3 | Declared adapter adopts the jubs-layout fixture store via the T5 parser; bytes-win on divergence | `test` |
 | AC-4 | `recall` respects a declared token budget with deterministic truncation + structured filters — asserted on the NEW parameters, not re-testing shipped behavior | `test` |
 | AC-5 | Rename: operator sign-off recorded for the memento ADR §5 amendment; new default pattern asserted root-anchored `/memento/`; jubs half graded ALREADY DONE (operator-authored `d79326b`, v1.4.1 — retroactively satisfies its gate) | `review + test + cmd:git log` |
-| AC-6 | Suite green; pre-block mutmut baseline recorded, then no new survivors on new/changed modules | `ci + cmd:mutmut` |
-| AC-7 | `docs/agent-consumers.md` documents the full agent contract: loop order, mandatory gate check, exit codes, CAS, claim scheme + TTL, `--adapter-file`-only | `review` |
+| AC-6 | *(amended)* Suite green; `also_copy` measurement fix landed; command/presentation split + `--json` shipped; exit-code contract table green (every exit-code mutant dead); no new survivors vs post-split baseline on contract-scope modules; presentation exclusion documented; baselines committed in `review/` | `ci + cmd:mutmut` |
+| AC-7 | `docs/agent-consumers.md` documents the full agent contract: loop order, mandatory gate check, exit codes, CAS, claim scheme + TTL, `--adapter-file`-only, **`--json` as the parse surface (prose non-contractual)** | `review` |
 
 ## Out of Scope
 Hierarchical/temporal abstraction (Phase C, data-hungry — ADR D7) · vectors/embeddings · MCP face (needs operator data-boundary ruling, ADR §2) · the 445 pre-existing survivors (42L-1239) · shim retirement (42L-1255) · queue-material coupling fix (42L-1257 — engine-side, may ride along only if T2 touches `versioned_paths()`) · declaring the API stable (operator HOLD).
