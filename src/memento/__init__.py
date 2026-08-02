@@ -52,6 +52,7 @@ from .gates import FieldSpec, Proposal, RuleSet, StoreState, Violation
 from .locking import SessionClaim, StoreLock
 from .queue import Queue, RetentionPolicy
 from .readpath import PrefixResult, RecallHit, assemble_prefix, recall
+from .spec import adapter_from_spec, load_adapter
 from .store import SCHEMA_VERSION, DocumentWrite, MemoryStore
 from .tokenizer import HeuristicCounter, TokenCounter
 from .writepath import (
@@ -109,6 +110,7 @@ __all__ = [
     "Violation",
     "WriteResult",
     "__version__",
+    "adapter_from_spec",
     "apply_consolidation",
     "assemble_prefix",
     "backlog_flag",
@@ -120,6 +122,7 @@ __all__ = [
     "fold",
     "forget_fact",
     "is_enabled",
+    "load_adapter",
     "note_contradiction",
     "push",
     "recall",

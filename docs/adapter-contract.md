@@ -60,6 +60,53 @@ ADAPTER = Adapter(
 
 ---
 
+## Declaring an adapter instead of importing one
+
+Everything above assumes the consumer is a Python application. The other consumer class 42labs has
+is an **agent** — markdown and a shell, no import statement anywhere. It declares its adapter in a
+JSON file and drives the engine through the CLI:
+
+```json
+{
+  "name": "clu",
+  "prefix_budget_tokens": 1200,
+  "identity_keys": ["id", "topic", "name", "key"],
+  "documents": {
+    "profile.md": {"title": "Operator", "sections": ["operator"]}
+  },
+  "prefix_sections": [{"name": "profile", "priority": 0, "document": "profile.md"}],
+  "schema": {"operator.confidence": {"type": "str", "enum": ["low", "medium", "high"]}},
+  "ordered_scales": {"operator.confidence": ["low", "medium", "high"]}
+}
+```
+
+```bash
+memento --store ./memento/clu prefix   --adapter-file adapter.json
+memento --store ./memento/clu facts    --adapter-file adapter.json --fingerprint
+memento --store ./memento/clu consolidate --adapter-file adapter.json \
+        --proposal proposal.json --session 260801-1730 --expect <fingerprint>
+```
+
+**A declared adapter gets the same engine.** The spec builds an ordinary `Adapter`, so the secrets
+gate, schema, ordered scales and the anti-erosion floor all apply unchanged. Exit codes are the
+contract: `3` gates rejected (every violation printed), `4` secrets, `5` stale proposal. Nothing is
+written on any of them.
+
+Two things a spec cannot do, deliberately: ship a custom `Rule` (that is arbitrary code), and supply
+its own `render_documents`. The engine renders instead — mappings sorted by key, list members sorted
+by the identity the floor addresses them with — because a declarative consumer cannot guarantee the
+determinism the contract requires and a renderer that reorders rows makes the history unreadable.
+
+An unknown key in a spec is refused rather than ignored: a typo that silently disables the gate it
+was meant to declare is worse than no gate at all.
+
+The `--expect` fingerprint is the same compare-and-swap the library requires, carried across the
+shell boundary. Read it with `facts --fingerprint`, submit with it, and a proposal derived from a
+state that has since moved is refused instead of overwriting the newer one. `--unchecked` is the
+deliberate opt-out, and it says so.
+
+---
+
 ## Facts, documents, and why both exist
 
 The projected documents are markdown, written by an LLM, and **not reconstructible from the event

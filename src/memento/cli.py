@@ -19,12 +19,15 @@ from typing import Any
 
 from .backup import enable_backup, is_enabled, read_config
 from .clock import SystemClock
+from .errors import GateFailure, MementoError, SecretsDetected, StaleProposal
 from .forgetting import document_revisions, forget_fact, rollback_document, tombstone
+from .gates import Proposal
 from .queue import Queue
-from .readpath import recall
+from .readpath import assemble_prefix, recall
+from .spec import load_adapter
 from .store import SCHEMA_VERSION, MemoryStore
 from .templates import preamble
-from .writepath import read_facts, read_tombstones
+from .writepath import UNCHECKED, apply_consolidation, facts_fingerprint, read_facts, read_tombstones
 
 
 def _session_id() -> str:
@@ -74,9 +77,132 @@ def cmd_view(args: argparse.Namespace) -> int:
     return 0
 
 
+def _adapter(args: argparse.Namespace, *, required: bool = True) -> Any:
+    """The adapter for this invocation: a declared spec file, or a Python `module:attribute`.
+
+    A consumer with no Python of its own — an agent driven by markdown and a shell — declares one.
+    Both paths build the same `Adapter`, so both get the same gates.
+    """
+    adapter = None
+    if getattr(args, "adapter_file", None):
+        adapter = load_adapter(args.adapter_file)
+    elif getattr(args, "adapter", None):
+        adapter = _resolve(args.adapter)
+    if adapter is None and required:
+        raise MementoError("this command needs --adapter-file or --adapter")
+    return adapter
+
+
+def _adapter_or_report(args: argparse.Namespace, *, required: bool = True) -> tuple[Any, int | None]:
+    """`(adapter, None)`, or `(None, exit_code)` with the reason already on stderr.
+
+    Scoped deliberately rather than wrapped around `main`: a blanket handler there would have
+    turned `SecretsDetected` from the `edit` verb into a quiet exit code, and that gate raising
+    loudly is the behaviour a regression test exists to hold.
+    """
+    try:
+        return _adapter(args, required=required), None
+    except MementoError as exc:
+        print(str(exc), file=sys.stderr)
+        return None, 1
+
+
 def cmd_facts(args: argparse.Namespace) -> int:
     store = MemoryStore(args.store)
-    print(json.dumps(read_facts(store), indent=2, sort_keys=True))
+    adapter, code = _adapter_or_report(args, required=False)
+    if code is not None:
+        return code
+    facts = read_facts(store, adapter)
+    if args.fingerprint:
+        # The compare-and-swap token. Read it, compose a proposal against these facts, then hand it
+        # back to `consolidate --expect` — which is what stops a second writer's work being
+        # silently overwritten by a proposal derived from a state that has since moved.
+        print(facts_fingerprint(facts))
+        return 0
+    print(json.dumps(facts, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_prefix(args: argparse.Namespace) -> int:
+    store = MemoryStore(args.store)
+    adapter, code = _adapter_or_report(args)
+    if code is not None:
+        return code
+    result = assemble_prefix(store, adapter, budget=args.budget)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "text": result.text,
+                    "tokens": result.tokens,
+                    "budget": result.budget,
+                    "counter": result.counter,
+                    "truncated": result.truncated,
+                    "dropped": result.dropped,
+                    "flags": [f.render() for f in result.flags],
+                },
+                indent=2,
+            )
+        )
+        return 0
+    for flag in result.flags:
+        print(f"FLAG: {flag.render()}", file=sys.stderr)
+    sys.stdout.write(result.text + ("\n" if result.text else ""))
+    return 0
+
+
+def cmd_consolidate(args: argparse.Namespace) -> int:
+    """Submit a consolidation from outside Python, through the whole gate stack.
+
+    This is the write path a declarative consumer uses, and it is deliberately the *same* one:
+    secrets, schema, derived identity, the anti-erosion floor, ordered scales. A proposal that would
+    be refused from a library caller is refused here, all-or-nothing, with every violation printed.
+    """
+    store = MemoryStore(args.store)
+    adapter, code = _adapter_or_report(args)
+    if code is not None:
+        return code
+    raw = sys.stdin.read() if args.proposal == "-" else Path(args.proposal).read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"proposal is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(data, dict):
+        print("a proposal must be a JSON object", file=sys.stderr)
+        return 2
+
+    proposal = Proposal(
+        facts=dict(data.get("facts", {})),
+        entries={k: list(v) for k, v in dict(data.get("entries", {})).items()},
+        documents=dict(data.get("documents", {})),
+        tombstones=set(data.get("tombstones", [])),
+        session_log=data.get("session_log"),
+    )
+    try:
+        result = apply_consolidation(
+            store,
+            adapter,
+            proposal,
+            session=args.session,
+            batch=args.batch,
+            expected_fingerprint=UNCHECKED if args.unchecked else args.expect,
+        )
+    except GateFailure as exc:
+        print("REJECTED — nothing was written.", file=sys.stderr)
+        for violation in exc.violations:
+            print(f"  {violation.render()}", file=sys.stderr)
+        return 3
+    except SecretsDetected as exc:
+        print(f"REJECTED — secrets: {exc}", file=sys.stderr)
+        return 4
+    except StaleProposal as exc:
+        print(f"REJECTED — {exc}", file=sys.stderr)
+        return 5
+
+    print(f"wrote documents: {', '.join(result.documents_written)}")
+    if result.streams_written:
+        print(f"wrote streams:   {', '.join(result.streams_written)}")
     return 0
 
 
@@ -127,7 +253,7 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
 def cmd_forget(args: argparse.Namespace) -> int:
     store = MemoryStore(args.store)
-    adapter = _resolve(args.adapter)
+    adapter = _adapter(args, required=False)
     session = _session_id()
     if adapter is None:
         tombstone(store, args.marker, session=session, batch="forget", reason=args.reason)
@@ -168,6 +294,11 @@ def cmd_prompts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _adapter_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--adapter", default=None, help="module:attribute")
+    parser.add_argument("--adapter-file", default=None, help="path to a declared adapter spec (JSON)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="memento", description=__doc__)
     parser.add_argument("--store", required=True, help="path to the store root")
@@ -182,7 +313,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_view)
 
     p = sub.add_parser("facts", help="print the structured facts behind the documents")
+    p.add_argument("--fingerprint", action="store_true", help="print only the compare-and-swap token")
+    _adapter_args(p)
     p.set_defaults(func=cmd_facts)
+
+    p = sub.add_parser("prefix", help="assemble the budgeted core prefix for a session")
+    p.add_argument("--budget", type=int, default=None)
+    p.add_argument("--json", action="store_true")
+    _adapter_args(p)
+    p.set_defaults(func=cmd_prefix)
+
+    p = sub.add_parser("consolidate", help="submit a proposal through the write gates")
+    p.add_argument("--proposal", required=True, help="path to a proposal JSON, or - for stdin")
+    p.add_argument("--session", required=True)
+    p.add_argument("--batch", default="consolidate")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--expect", help="fingerprint from `facts --fingerprint`")
+    group.add_argument(
+        "--unchecked",
+        action="store_true",
+        help="opt out of the compare-and-swap, deliberately (first write to an empty store)",
+    )
+    _adapter_args(p)
+    p.set_defaults(func=cmd_consolidate)
 
     p = sub.add_parser("history", help="revisions of a document")
     p.add_argument("document")
@@ -200,8 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("forget", help="tombstone a fact; never a delete")
     p.add_argument("marker", help="path/key as reported by the gates, e.g. languages/de")
-    p.add_argument("--adapter", default=None, help="module:attribute, to re-render documents")
     p.add_argument("--reason", default="operator forget")
+    _adapter_args(p)
     p.set_defaults(func=cmd_forget)
 
     p = sub.add_parser("recall", help="search events and documents")
