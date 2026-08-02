@@ -126,3 +126,10 @@ deterministic tier green. Phase B (first consumer: jubs) —
 consumer proves the adapter boundary) — unscoped by design.
 
 The API is provisional until Phase C. Pin by SHA.
+
+## License
+
+Open source — [AGPL-3.0](LICENSE). Commercial — contact ahoy@42labs.io.
+
+---
+If it earned its keep, [coffee is appreciated](https://buymeacoffee.com/42piratas). ☕
