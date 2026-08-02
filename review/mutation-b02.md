@@ -41,14 +41,15 @@ across real process boundaries, which no in-process test can.
 
 ## Post-split baseline — the number the ratchet works from
 
-4435 mutants, 2926 killed, 117 with no test, **1333 survivors**.
+4435 mutants, 2926 killed, 117 with no test, **1337 survivors** — refreshed by an incremental
+sweep (`commands`, `spec`, `adoption`; 1919 mutants) after the independent review's fixes landed.
 
 | Module | In ratchet scope | Survivors |
 |:--|:--|--:|
-| `commands` | **yes** | 400 |
-| `spec` | **yes** | 232 |
+| `commands` | **yes** | 401 |
+| `spec` | **yes** | 234 |
 | `readpath` | **yes** | 111 |
-| `adoption` | **yes** | 11 |
+| `adoption` | **yes** | 12 |
 | `gates` | yes (A-01) | 232 |
 | `store` | yes (A-01) | 90 |
 | `events` | yes (A-01) | 84 |
@@ -64,7 +65,7 @@ measured is in `mutation-survivors-b02-baseline.txt` (738, `main` @ `2b5c9de`). 
 ## Every exit-code mutant is dead
 
 The amendment's hard requirement, checked mechanically: a mutant counts if the set of `EXIT_*`
-constants or literal return codes in the function changes. Across all 1333 survivors, **one**
+constants or literal return codes in the function changes. Across all 1337 survivors, **one**
 remains, and it is provably equivalent:
 
 ```
@@ -86,6 +87,12 @@ remote and pins that path to exit 1.
 |:--|:--|
 | `commands._ok` — omitted `code=EXIT_OK` | The dataclass default is `EXIT_OK` |
 | 4 no-ops from the pre-split sweep | Mutant and original are identical after formatting; nothing to kill |
+| 4 added by the review fixes (`spec._entry` ×3, and one each in `commands`/`adoption`) | All message-text mutants in the free-text `error` field of a refusal. Killing them means pinning prose, which is the thing R1 separated out as non-contractual |
+
+**The `+4` is a declared exception, not a pass.** The strict reading of R2 is no new survivors at all;
+these four arrived with ~200 lines of new *validation* code written to close two CRITICAL findings,
+and every one of them is a message string. Recorded here rather than absorbed silently, so the
+nightly ratchet starts from a number somebody chose.
 
 ## `locking` — a regression R3 caused, and closed
 
@@ -106,4 +113,4 @@ to build; this ruling is its spec and these baselines are its input.
 ## Files
 
 - `mutation-survivors-b02-baseline.txt` — 738, `main` @ `2b5c9de`, the five previously unmeasured modules
-- `mutation-survivors-b02.txt` — 1333, post-split, ten modules
+- `mutation-survivors-b02.txt` — 1337, post-split and post-review-fixes, ten modules
