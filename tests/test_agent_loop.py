@@ -204,8 +204,16 @@ def _claim_in_a_subprocess(
     exclusion at all — the exact shape of the three regression tests that once passed against the
     code they were written to guard (handoff §5.1).
     """
+    # Sleep to the barrier, then spin only for the last few milliseconds. A spin across the whole
+    # wait pegs a core per process, and six of those under a mutation run — which is itself already
+    # eight workers wide — starves the machine badly enough that the sweep appears to hang.
     barrier = (
-        f"import time\nwhile time.time() < {start_at!r}:\n    pass\n" if start_at is not None else ""
+        "import time\n"
+        f"time.sleep(max(0.0, {start_at!r} - time.time() - 0.01))\n"
+        f"while time.time() < {start_at!r}:\n"
+        "    pass\n"
+        if start_at is not None
+        else ""
     )
     code = (
         "import sys\n"
@@ -284,7 +292,7 @@ def test_the_cas_claim_excludes_across_processes(agent):
 def test_two_concurrent_processes_contend_and_exactly_one_wins(agent):
     """The race, run as a race rather than in sequence — six processes, one claim, one instant."""
     agent("status")
-    start_at = time.time() + 2.0  # every interpreter is up and spinning before any of them tries
+    start_at = time.time() + 1.2  # every interpreter is up and waiting before any of them tries
     with ThreadPoolExecutor(max_workers=6) as pool:
         results = list(
             pool.map(lambda _: _claim_in_a_subprocess(agent.store, SESSION, start_at=start_at), range(6))
