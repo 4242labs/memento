@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Long-term memory/relationship engine for 42labs agents. One engine, N independent memories."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+# Dual-licensed: AGPL-3.0 open source, commercial on request (see LICENSE). The metadata said MIT
+# while the file said AGPL — a consumer reading the wheel would have taken permissions the project
+# never granted, and metadata is what a consumer actually reads.
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
 authors = [{ name = "42labs" }]
 dependencies = []
 
@@ -41,5 +45,6 @@ dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.2", "hatchling>=1.25"]
 source_paths = ["src/memento/gates.py", "src/memento/events.py", "src/memento/store.py", "src/memento/locking.py", "src/memento/queue.py", "src/memento/readpath.py", "src/memento/cli.py", "src/memento/spec.py", "src/memento/drain.py", "src/memento/adoption.py"]
 # The whole package, not just the mutated modules: mutmut copies only what is listed
 # here, and a partial copy means the suite dies on the first cross-module import rather than
-# running against a mutant. README.md is needed because the wheel-build test builds from this copy.
-also_copy = ["tests/", "pyproject.toml", "README.md", "src/memento/"]
+# running against a mutant. README.md and .gitignore are here because tests read them: the wheel
+# build needs the readme, and the store-pattern regression reads the ignore file.
+also_copy = ["tests/", "pyproject.toml", "README.md", ".gitignore", "src/memento/"]

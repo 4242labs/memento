@@ -314,3 +314,34 @@ def test_a_stale_claim_is_reclaimable_without_an_operator(agent):
     assert agent("claim", SESSION, "--ttl", "0").returncode == 0
     again = agent("claim", SESSION)
     assert again.returncode == 0, "a claim past its TTL must be reclaimable by the next comer"
+
+
+def test_done_honors_a_declared_retention_policy(agent, tmp_path):
+    """Retention is the consumer's declaration, and `done` is the only verb that can act on it.
+
+    Marking a session consolidated is what makes its transcript material eligible for pruning. A
+    queue built without the adapter keeps everything — the safe default, and the wrong answer for a
+    consumer that stated otherwise out loud.
+    """
+    pruning = tmp_path / "pruning.json"
+    pruning.write_text(
+        json.dumps({**SPEC, "retention": {"keep_everything": False, "prune_after_consolidation": True}}),
+        encoding="utf-8",
+    )
+    agent("journal", SESSION, "--queue", agent.queue, "--text", "material")
+    agent("enqueue", SESSION, "--queue", agent.queue)
+    journal = tmp_path / "queue" / SESSION / "journal.jsonl"
+    assert journal.exists()
+
+    assert agent("done", SESSION, "--queue", agent.queue, "--adapter-file", str(pruning)).returncode == 0
+    assert not journal.exists(), "a declared prune policy was ignored"
+
+
+def test_done_keeps_everything_when_no_adapter_says_otherwise(agent, tmp_path):
+    """The control: the default is to keep, and it stays the default."""
+    agent("journal", SESSION, "--queue", agent.queue, "--text", "material")
+    agent("enqueue", SESSION, "--queue", agent.queue)
+    journal = tmp_path / "queue" / SESSION / "journal.jsonl"
+
+    assert agent("done", SESSION, "--queue", agent.queue).returncode == 0
+    assert journal.exists()

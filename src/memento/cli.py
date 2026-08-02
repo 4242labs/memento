@@ -250,7 +250,16 @@ def cmd_consolidate(args: argparse.Namespace) -> int:
 # --------------------------------------------------- the session lifecycle, from a shell
 
 
-def _queue(args: argparse.Namespace) -> Queue:
+def _queue(args: argparse.Namespace, adapter: Any = None) -> Queue:
+    """The queue, carrying the adapter's retention policy when the caller has one.
+
+    Retention is an adapter decision the consumer states out loud, and the only verb that acts on it
+    is `done` — marking a session consolidated is what makes its transcript material eligible for
+    pruning. A queue built without the adapter silently keeps everything, which is the safe default
+    and the wrong answer for a consumer that declared otherwise.
+    """
+    if adapter is not None and getattr(adapter, "retention", None) is not None:
+        return Queue(args.queue, retention=adapter.retention)
     return Queue(args.queue)
 
 
@@ -347,7 +356,10 @@ def cmd_done(args: argparse.Namespace) -> int:
     and gets re-run, and re-running a consolidation is cheap where losing one is not. So this is its
     own verb rather than a side effect of `consolidate`, which would put it *before* the commit.
     """
-    queue = _queue(args)
+    adapter, code = _adapter_or_report(args, required=False)
+    if code is not None:
+        return code
+    queue = _queue(args, adapter)
     if not queue.is_enqueued(args.session):
         print(f"{args.session} was never enqueued", file=sys.stderr)
         return 1
@@ -626,6 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("done", help="write the consolidated marker — last, after commit")
     p.add_argument("session")
     p.add_argument("--queue", required=True)
+    _adapter_args(p)  # only for its retention policy: pruning is gated on the marker this writes
     p.set_defaults(func=cmd_done)
 
     p = sub.add_parser("claim", help="claim a session's consolidation; prints the release token")
