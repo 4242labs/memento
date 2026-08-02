@@ -1,6 +1,6 @@
 # Block B-02: MEMENTO for agent consumers — full write path, declared rules, recall
 
-**Status:** 📋 To do
+**Status:** ✅ Done — shipped in PR #8 (`2b5c9de`, T1) + PR #9 (`969ae5b`, T2–T8), CI green. All ACs verified 2026-08-02 (architect closure pass): AC-1/1b `tests/test_agent_loop.py` subprocess-only + fail-first race probe; AC-2 tighten-only spec rules; AC-3 bytes-win adoption; AC-4 budgeted recall; AC-5 ADR Amendment A1 (operator-signed, root-anchored `/memento/`); AC-6 amended T8 gate met per `review/mutation-b02.md` — **the +4 message-string survivors are ACCEPTED as a declared exception** (free-text `error` prose, the exact class R1 ruled non-contractual); AC-7 `docs/agent-consumers.md` @ `--json` + exit codes.
 **Repo:** `4242labs/memento` (+ ADR amendment; jubs follows via pin bump + 42L-1236-style owned step for the rename)
 **Depends on:** A-01, B-01 (shipped). PR **memento#8** (declarative adapters + CLI `prefix`/`consolidate`/`facts`) is the foundation — review and land it first, then build on it.
 **Created:** 2026-08-02 · **Adversarial pre-dispatch review:** Sonnet, 2026-08-02 — 3 CRITICAL / 4 MAJOR / 4 minor, ALL folded below (claim redesign, backup verb, spawn-gating, T5/T6 rescope, T7 double-gate, race-probe ACs).
