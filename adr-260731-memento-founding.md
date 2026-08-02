@@ -114,8 +114,10 @@ Retirement is an *event* (D2); tombstoned entries remain visible to the fold (ju
 - **Nothing on disk has to move.** `store_root` is a path the consumer passes; the engine has never
   hard-coded either name. `/memory/` stays in this repo's `.gitignore` for stores that predate the
   rename.
-- jubs' own move (`jubs-app/memory/` → `jubs-app/memento/`) is **separately operator-gated** and is
-  not covered by this amendment.
+- jubs' own move (`jubs-app/memory/` → `jubs-app/memento/`) is **not covered by this amendment and
+  needs nothing further**: it already shipped, operator-authored, in jubs-app `d79326b` / v1.4.1,
+  with the same root-anchored `/memento/`. That commit is its own sign-off. This amendment records
+  the engine half, which the jubs precedent argues for but cannot stand in for.
 
 ## 6. Review record
 
