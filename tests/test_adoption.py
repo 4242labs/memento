@@ -243,3 +243,13 @@ def test_prose_a_consumer_added_by_hand_does_not_become_facts(projected, adapter
     recovered = adapter.facts_from_store(projected)
     assert not any("typed" in str(v) for v in recovered["operator"].values())
     assert not check_adoption(projected, adapter).ok
+
+
+def test_from_store_says_so_when_the_adapter_cannot_parse_documents(projected, capsys):
+    """`{}` and exit 0 would read as "the store is empty". An empty baseline is one free erosion."""
+    code = main([
+        "--store", str(projected.root), "facts", "--from-store",
+        "--adapter", "fixture_consumer:ADAPTER",
+    ])
+    assert code == 1
+    assert "cannot parse documents back into facts" in capsys.readouterr().err

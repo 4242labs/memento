@@ -142,6 +142,15 @@ def cmd_facts(args: argparse.Namespace) -> int:
         if adapter is None:
             print("--from-store needs --adapter-file or --adapter", file=sys.stderr)
             return 1
+        if getattr(adapter, "facts_from_store", None) is None:
+            # Otherwise this prints `{}` and exits 0, which reads as "the store is empty" when it
+            # means "this adapter cannot read it" — and an empty baseline is one free erosion.
+            print(
+                f"adapter {getattr(adapter, 'name', '?')!r} cannot parse documents back into facts; "
+                "declare one (a spec adapter gets this for free) or write facts_from_store",
+                file=sys.stderr,
+            )
+            return 1
         report = check_adoption(store, adapter)
         for flag in report.flags:
             print(f"FLAG: {flag.render()}", file=sys.stderr)
