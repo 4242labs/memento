@@ -36,8 +36,8 @@ Spec adapters get only the floor; apps can tighten, agents can't. Add a declarat
 ### T6: Recall — the *delta* only *(paper gap; `recall` verb already shipped in A-01)*
 `memento recall` exists (`readpath.recall`, commit `f42ffcc`) with deterministic ordering + contamination coverage (review MAJOR-4). This task ships only what's missing for agent-initiative retrieval: **token-budgeted output** (adapter/spec-declared budget + deterministic truncation, not just `--limit` counts) and **structured filters** (stream, key, date-range). No vectors (ADR §3 rejection stands).
 
-### T7: Store dir rename `memory/` → `memento/` *(gap 5 — DOUBLE operator gate)*
-Default store dir becomes `memento/`, reducing collision with source packages named `memory/`. Two facts bind (review MAJOR-6): the ADR lists store placement under §5 **"ALL SETTLED — not up for review"**, so the amendment itself **requires explicit operator sign-off before the engine half ships** — not just the jubs half; and the load-bearing trap fix is **root-anchoring**, not the name — the new default pattern is `/memento/`, root-anchored, and an AC asserts it. jubs' move (`jubs-app/memory/` → `jubs-app/memento/`) is a B-01-style owned step, separately operator-gated.
+### T7: Store dir rename `memory/` → `memento/` *(gap 5 — engine catches up to shipped reality)*
+**The jubs half already shipped, by the operator personally** (verification pass 2026-08-02): jubs-app `d79326b` / v1.4.1 / ADR rev 10, operator-authored, store at `jubs-app/memento/` with a root-anchored `/memento/` — that commit **is** the jubs-side sign-off; nothing further is gated there. What remains is the engine half: default store dir becomes `memento/`, and because the memento founding ADR lists store placement under §5 **"ALL SETTLED — not up for review"** (still reading `memory/`), the amendment **requires explicit operator sign-off before it ships** — the jubs precedent argues for it but does not substitute for it. Load-bearing detail unchanged: the trap fix is **root-anchoring**, not the name — the new default pattern is `/memento/` and an AC asserts it.
 
 ### T8: Mutation coverage on the new code *(gap 6)*
 **First establish a pre-block mutmut baseline** for every module this block touches that A-01 never measured (`queue`, `readpath`, `cli`, `spec`, `drain` — only gates/store/events/locking have baselines; review minor-10). Then: no new survivors on any new/changed module before merge. The pre-existing 445 stay 42L-1239.
@@ -51,7 +51,7 @@ Default store dir becomes `memento/`, reducing collision with source packages na
 | AC-2 | Spec-declared domain rules enforce (tighten) and cannot loosen the floor; loosening spec refused at load | `test` |
 | AC-3 | Declared adapter adopts the jubs-layout fixture store via the T5 parser; bytes-win on divergence | `test` |
 | AC-4 | `recall` respects a declared token budget with deterministic truncation + structured filters — asserted on the NEW parameters, not re-testing shipped behavior | `test` |
-| AC-5 | Rename: operator sign-off recorded for the ADR amendment itself; new default pattern asserted root-anchored `/memento/`; jubs half separately operator-gated | `review + test + cmd:git log` |
+| AC-5 | Rename: operator sign-off recorded for the memento ADR §5 amendment; new default pattern asserted root-anchored `/memento/`; jubs half graded ALREADY DONE (operator-authored `d79326b`, v1.4.1 — retroactively satisfies its gate) | `review + test + cmd:git log` |
 | AC-6 | Suite green; pre-block mutmut baseline recorded, then no new survivors on new/changed modules | `ci + cmd:mutmut` |
 | AC-7 | `docs/agent-consumers.md` documents the full agent contract: loop order, mandatory gate check, exit codes, CAS, claim scheme + TTL, `--adapter-file`-only | `review` |
 
