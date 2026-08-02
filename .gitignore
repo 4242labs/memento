@@ -1,5 +1,8 @@
-# Stores are never tracked. Root-anchored on purpose (ADR D1): a bare `memory/`
-# would also untrack source packages named `memory` at any depth.
+# Stores are never tracked. Root-anchored on purpose (ADR D1, amended 2026-08-02): a bare
+# `memento/` would untrack a source package named `memento` at any depth — including this repo's
+# own `src/memento/`. The default directory name changed; the anchoring is the load-bearing half.
+# `/memory/` stays for stores that predate the rename; nothing on disk has to move.
+/memento/
 /memory/
 
 __pycache__/

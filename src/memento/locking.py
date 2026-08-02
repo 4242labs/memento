@@ -5,9 +5,14 @@ Two distinct primitives, deliberately not the same thing:
 * **Store lock** — one per `store_root`. Serializes consolidation writes, queue claim operations,
   and the local half of autocommit. It is *never* held across the LLM call and *never* across
   `pull`/`push`, so its maximum hold is bounded by local I/O.
-* **Session claim** — one per session, ephemeral. Held for the claiming process's lifetime via
-  `flock`, so the OS releases it if the holder dies and a later drain reclaims the session. PID and
-  timestamp are recorded alongside for the staleness-TTL variant and for operator visibility.
+* **Session claim** — one per session, ephemeral. Two implementations, for two shapes of consumer:
+
+  * `SessionClaim` holds an `flock` for the claiming **process's lifetime**, so the OS releases it
+    if the holder dies. Right for the drain, which does the whole consolidation inside one process.
+  * `CasClaim` is a claim **file** with a token and a TTL, and outlives the process that took it.
+    Right for an agent, whose consolidation spans several `memento` invocations with the model's own
+    thinking in between — an `flock` taken by `memento claim` is gone the moment that command exits,
+    so it would exclude nobody.
 
 The claim is **not** the `consolidated` marker and never touches it. The marker stays marker-LAST —
 that invariant (crash before marker ⇒ re-run, never lose) is load-bearing and nothing here goes near
@@ -210,6 +215,143 @@ class SessionClaim:
 
     def __exit__(self, *exc: object) -> None:
         self.release()
+
+
+@dataclass(frozen=True)
+class CasClaimRecord:
+    """What a `CasClaim` writes down. The token is the right to release it."""
+
+    session: str
+    pid: int
+    token: str
+    acquired_at: float
+    ttl: float
+
+    def is_stale(self, now: float) -> bool:
+        return (now - self.acquired_at) > self.ttl
+
+    def to_obj(self) -> dict[str, object]:
+        return {
+            "session": self.session,
+            "pid": self.pid,
+            "token": self.token,
+            "acquired_at": self.acquired_at,
+            "ttl": self.ttl,
+        }
+
+
+class CasClaim:
+    """A session claim that survives the process that took it.
+
+    `SessionClaim` cannot serve an agent. Its `flock` dies with the acquiring process, so a
+    `memento claim` verb built on it would release on exit and exclude nothing — the loser of a race
+    would go on to pay for the same consolidation, which is exactly the D2 invariant the claim
+    exists to hold.
+
+    So the claim is a **file**: acquiring writes `(pid, token, acquired_at, ttl)`, releasing requires
+    the token back. Two rules keep it from becoming a wedge:
+
+    * **Every claim expires.** A claim older than its TTL is reclaimable by anyone, so an agent that
+      walked away mid-loop does not leave a session permanently unconsolidatable.
+    * **Read-modify-write runs under the store lock**, which is `flock`-backed and therefore mutually
+      exclusive between *processes*. An unguarded check-then-create loses the race it exists to win.
+
+    It is not the `consolidated` marker and it never touches it.
+    """
+
+    def __init__(
+        self,
+        locks_dir: Path,
+        session: str,
+        *,
+        clock: Clock = DEFAULT_CLOCK,
+        ttl: float = DEFAULT_CLAIM_TTL,
+        lock: StoreLock | None = None,
+    ) -> None:
+        self.locks_dir = Path(locks_dir)
+        self.session = validate_session_id(session)
+        self.clock = clock
+        self.ttl = ttl
+        self.path = self.locks_dir / f"claim-{self.session}.json"
+        self.lock = lock or StoreLock.for_store(self.locks_dir)
+
+    def read(self) -> CasClaimRecord | None:
+        if not self.path.exists():
+            return None
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8") or "{}")
+        except json.JSONDecodeError:
+            return None  # a torn write from a crash mid-claim: unreadable is unheld
+        if "token" not in data:
+            return None
+        return CasClaimRecord(
+            session=str(data.get("session", self.session)),
+            pid=int(data.get("pid", 0)),
+            token=str(data["token"]),
+            acquired_at=float(data.get("acquired_at", 0.0)),
+            ttl=float(data.get("ttl", self.ttl)),
+        )
+
+    def acquire(self) -> CasClaimRecord:
+        """Take the claim, or raise `ClaimHeld` naming who holds it and for how much longer."""
+        with self.lock.hold():
+            now = self.clock.now()
+            existing = self.read()
+            if existing is not None and not existing.is_stale(now):
+                remaining = existing.ttl - (now - existing.acquired_at)
+                raise ClaimHeld(
+                    f"session {self.session} is claimed by pid {existing.pid} "
+                    f"({remaining:.0f}s before it goes stale)"
+                )
+            record = CasClaimRecord(
+                session=self.session,
+                pid=os.getpid(),
+                token=os.urandom(8).hex(),
+                acquired_at=now,
+                ttl=self.ttl,
+            )
+            self._write(record)
+            return record
+
+    def release(self, token: str) -> bool:
+        """Give the claim back. Refuses a token that does not match — releasing someone else's
+        claim is how two claimants end up inside the critical section together."""
+        with self.lock.hold():
+            existing = self.read()
+            if existing is None:
+                return False
+            if existing.token != token:
+                raise ClaimHeld(
+                    f"session {self.session} is held by pid {existing.pid} under a different token"
+                )
+            self.path.unlink()
+            return True
+
+    def _write(self, record: CasClaimRecord) -> None:
+        self.locks_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(record.to_obj(), fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, self.path)
+
+
+def cas_claims(locks_dir: Path) -> list[CasClaimRecord]:
+    """Every CAS claim currently on disk, oldest first. Reporting only."""
+    directory = Path(locks_dir)
+    if not directory.exists():
+        return []
+    out = []
+    for path in sorted(directory.glob("claim-*.json")):
+        session = path.name[len("claim-") : -len(".json")]
+        try:
+            record = CasClaim(directory, session).read()
+        except MementoError:
+            continue  # an artifact whose session id does not validate; never act on it
+        if record is not None:
+            out.append(record)
+    return sorted(out, key=lambda r: (r.acquired_at, r.session))
 
 
 def stale_claims(

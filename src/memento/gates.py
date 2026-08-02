@@ -28,6 +28,7 @@ display and for adapter-declared paths, where the dot is the documented separato
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -320,10 +321,43 @@ def _covered(path: Path, allowed: set[str]) -> bool:
 
 @dataclass(frozen=True)
 class FieldSpec:
+    """One field's constraints.
+
+    `check` is the code-shaped extension point, available to an adapter written in Python.
+    `pattern` is its JSON-expressible sibling — a regex *string*, so a consumer that declares its
+    adapter in a spec file can constrain a field's text without shipping a callable. Both tighten;
+    neither can widen anything, because a field with no spec at all is already unconstrained.
+    """
+
     type: type | tuple[type, ...] | None = None
     required: bool = False
     enum: Sequence[Any] | None = None
     check: Callable[[Any], bool] | None = None
+    pattern: str | None = None
+
+
+def field_violations(spec: FieldSpec, value: Any, rule: str, where: str) -> list[Violation]:
+    """Apply one field spec to one value. Shared so the facts tree and event entries agree.
+
+    Type is checked first and short-circuits: `enum`, `pattern` and `check` all assume they were
+    handed the kind of value they were written for, and reporting four consequences of one wrong
+    type reads as four defects.
+    """
+    if spec.type is not None and not isinstance(value, spec.type):
+        return [Violation(rule, where, f"expected {spec.type}, got {type(value).__name__}")]
+    out: list[Violation] = []
+    if spec.enum is not None and value not in spec.enum:
+        out.append(Violation(rule, where, f"{value!r} is not one of {list(spec.enum)}"))
+    if spec.pattern is not None:
+        if not isinstance(value, str):
+            out.append(
+                Violation(rule, where, f"pattern {spec.pattern!r} needs text, got {type(value).__name__}")
+            )
+        elif re.search(spec.pattern, value) is None:
+            out.append(Violation(rule, where, f"{value!r} does not match {spec.pattern!r}"))
+    if spec.check is not None and not spec.check(value):
+        out.append(Violation(rule, where, f"{value!r} failed the field check"))
+    return out
 
 
 class SchemaRule:
@@ -349,16 +383,7 @@ class SchemaRule:
                     out.append(Violation(self.name, declared, "required field is missing"))
                 continue
             for path, value in matches:
-                where = render_path(path)
-                if spec.type is not None and not isinstance(value, spec.type):
-                    out.append(
-                        Violation(self.name, where, f"expected {spec.type}, got {type(value).__name__}")
-                    )
-                    continue
-                if spec.enum is not None and value not in spec.enum:
-                    out.append(Violation(self.name, where, f"{value!r} is not one of {list(spec.enum)}"))
-                if spec.check is not None and not spec.check(value):
-                    out.append(Violation(self.name, where, f"{value!r} failed the field check"))
+                out.extend(field_violations(spec, value, self.name, render_path(path)))
         return out
 
 
@@ -383,25 +408,9 @@ class EntrySchemaRule:
                         if spec.required:
                             out.append(Violation(self.name, f"{where}.{key}", "required"))
                         continue
-                    value = entry[key]
-                    if spec.type is not None and not isinstance(value, spec.type):
-                        out.append(
-                            Violation(
-                                self.name,
-                                f"{where}.{key}",
-                                f"expected {spec.type}, got {type(value).__name__}",
-                            )
-                        )
-                    elif spec.enum is not None and value not in spec.enum:
-                        out.append(
-                            Violation(
-                                self.name, f"{where}.{key}", f"{value!r} is not one of {list(spec.enum)}"
-                            )
-                        )
-                    elif spec.check is not None and not spec.check(value):
-                        out.append(
-                            Violation(self.name, f"{where}.{key}", f"{value!r} failed the field check")
-                        )
+                    out.extend(
+                        field_violations(spec, entry[key], self.name, f"{where}.{key}")
+                    )
         return out
 
 
@@ -564,6 +573,56 @@ class AntiErosionFloor:
         return out
 
 
+class RequiredMembersRule:
+    """Adapter-declared members that must survive every consolidation.
+
+    Strictly a tightening of the floor. The floor already refuses a member that disappears without a
+    tombstone; this refuses one that disappears *with* one, for the handful of members a consumer
+    considers structural rather than observational — an operator's own profile key, say. Declaring
+    nothing here leaves the floor exactly as it was.
+    """
+
+    name = "required-members"
+
+    def __init__(
+        self,
+        required: Mapping[str, Sequence[str]],
+        *,
+        identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS,
+    ) -> None:
+        self.required = {parse_declared(k): [str(m) for m in v] for k, v in required.items()}
+        self.identity_keys = tuple(identity_keys)
+
+    def check(self, current: StoreState, proposal: Proposal) -> list[Violation]:
+        out: list[Violation] = []
+        for declared, members in self.required.items():
+            where = render_path(declared)
+            found, value = get(proposal.facts, declared, self.identity_keys)
+            if not found:
+                out.append(Violation(self.name, where, "declared required, and is missing"))
+                continue
+            view = membership(value, self.identity_keys)
+            if view is None:
+                out.append(Violation(self.name, where, "is not a collection; its members cannot be required"))
+                continue
+            if view.problem is not None:
+                out.append(Violation(self.name, where, f"cannot be verified: {view.problem}"))
+                continue
+            for member in members:
+                if member not in view.members:
+                    out.append(
+                        Violation(self.name, f"{where}.{member}", "declared required, and is missing")
+                    )
+        return out
+
+
+#: The floor's own ceiling on scale movement. An adapter may declare a *smaller* step — freezing a
+#: scale outright with 0 — and may never declare a larger one. Enforced twice on purpose: the spec
+#: loader refuses a loosening declaration at load, and this clamp means a library caller cannot
+#: loosen it either.
+MAX_SCALE_STEP = 1
+
+
 class OrderedScaleFloor:
     """Engine-mandatory. Declared ordered scales move at most one step per consolidation.
 
@@ -579,13 +638,21 @@ class OrderedScaleFloor:
         scales: Mapping[str, Sequence[Any]] | None = None,
         *,
         identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS,
+        max_steps: Mapping[str, int] | None = None,
     ) -> None:
         self.scales = {parse_declared(k): list(v) for k, v in (scales or {}).items()}
+        self.max_steps = {
+            parse_declared(k): min(int(v), MAX_SCALE_STEP) for k, v in (max_steps or {}).items()
+        }
         self.identity_keys = tuple(identity_keys)
+
+    def limit_for(self, declared: Path) -> int:
+        return self.max_steps.get(declared, MAX_SCALE_STEP)
 
     def check(self, current: StoreState, proposal: Proposal) -> list[Violation]:
         out: list[Violation] = []
         for declared, order in self.scales.items():
+            limit = self.limit_for(declared)
             for path, new_value in expand(proposal.facts, declared, self.identity_keys):
                 where = render_path(path)
                 if new_value not in order:
@@ -595,13 +662,14 @@ class OrderedScaleFloor:
                 if not found or old_value not in order:
                     continue  # a new member, or a value that was never on the scale
                 step = abs(order.index(new_value) - order.index(old_value))
-                if step > 1:
+                if step > limit:
+                    allowed = "no movement" if limit == 0 else f"at most {limit}"
                     out.append(
                         Violation(
                             self.name,
                             where,
                             f"{old_value!r} → {new_value!r} is {step} steps; "
-                            "at most 1 per consolidation",
+                            f"{allowed} per consolidation",
                         )
                     )
         return out
@@ -636,12 +704,13 @@ class RuleSet:
         *,
         ordered_scales: Mapping[str, Sequence[Any]] | None = None,
         identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS,
+        ordered_scale_steps: Mapping[str, int] | None = None,
     ) -> None:
         keys = tuple(identity_keys)
         self.identity_keys = keys
         self.floor: list[Rule] = [
             AntiErosionFloor(keys),
-            OrderedScaleFloor(ordered_scales, identity_keys=keys),
+            OrderedScaleFloor(ordered_scales, identity_keys=keys, max_steps=ordered_scale_steps),
             NoEntryRewrite(),
         ]
         self.adapter_rules = list(adapter_rules)

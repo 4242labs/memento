@@ -13,6 +13,7 @@ import copy
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,7 @@ from memento import (
     CorruptStoreError,
     GateFailure,
     MementoError,
+    MemoryStore,
     PrefixSection,
     Proposal,
     Queue,
@@ -942,3 +944,35 @@ def test_a_tree_at_the_depth_limit_is_still_accepted(store, adapter):
         store, adapter, Proposal(facts=deep), session="s1", batch="b1",
         expected_fingerprint=UNCHECKED,
     ).ok
+
+
+# ============================================ b02 — the store-directory rename is anchored
+
+
+def test_the_default_store_pattern_is_root_anchored():
+    """ADR amendment A1 (operator, 2026-08-02): the name changed; the anchoring is what matters.
+
+    A bare `memento/` in this repo's `.gitignore` would untrack `src/memento/` — the engine's own
+    source — at which point the rename has traded a documentation nit for a repository that
+    silently stops tracking itself. The trap is the same one `/memory/` was anchored against in ADR
+    review round 5, moved somewhere worse.
+    """
+    root = Path(__file__).resolve().parents[1]
+    lines = [
+        line.strip()
+        for line in (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    assert "/memento/" in lines, "the default store directory must be ignored"
+    assert "memento/" not in lines, "an unanchored pattern would untrack src/memento/"
+    assert (root / "src" / "memento" / "__init__.py").exists()
+
+
+def test_the_engine_hard_codes_neither_store_directory_name(store):
+    """Which is why the rename moves no data: `store_root` is the consumer's to name."""
+    named_anything = MemoryStore(store.root.parent / "a-directory-of-our-own")
+    named_anything.initialize()
+    named_anything.replace_document("profile.md", "## x\n", session="s1", batch="b1")
+
+    assert named_anything.read_document("profile.md") == "## x\n"

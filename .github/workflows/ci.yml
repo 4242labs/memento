@@ -78,7 +78,9 @@ jobs:
 
       - name: Refuse a committed store
         run: |
-          if git ls-files | grep -E '(^|/)memory/|(^|/)\.memento/' ; then
+          # `memento/` only at the repo root: `src/memento/` is this engine's own source, and a
+          # bare pattern would fail the build on every commit to it.
+          if git ls-files | grep -E '^memento/|(^|/)memory/|(^|/)\.memento/' ; then
             echo "::error::a memory store appears to be tracked in this repo"
             exit 1
           fi

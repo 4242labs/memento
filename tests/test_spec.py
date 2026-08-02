@@ -262,3 +262,24 @@ def test_cli_command_needing_an_adapter_says_so(tmp_path, capsys):
     root = tmp_path / "store"
     assert main(["--store", str(root), "prefix"]) == 1
     assert "adapter" in capsys.readouterr().err
+
+
+def test_members_render_in_identity_order_not_in_value_order(declared):
+    """Sorted by the identity the floor addresses members with — not by whatever `str` gives.
+
+    `_sorted_members` falls back to the rendered scalar as a tie-break, and that tie-break is strong
+    enough to hide a broken identity key: shuffling the input still produced identical bytes even
+    when the identity lookup returned nothing at all. So this fixes the identities and asks only
+    where they land.
+    """
+    # The tie-break is `str(member)`, which begins with whichever field was inserted first — so the
+    # two orderings only disagree when that field disagrees with the identity. Anything else and
+    # this test passes against an identity lookup that returns nothing at all.
+    facts = {
+        "practice": [
+            {"weight": "aaa", "topic": "zebra"},
+            {"weight": "zzz", "topic": "alpha"},
+        ]
+    }
+    rendered = declared.render_documents(facts)["practice.md"]
+    assert rendered.index("alpha") < rendered.index("zebra"), rendered

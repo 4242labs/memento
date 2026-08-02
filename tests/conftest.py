@@ -9,6 +9,7 @@ discipline is testable without one.
 from __future__ import annotations
 
 import copy
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -186,3 +187,27 @@ def seeded(store, adapter):
         expected_fingerprint=UNCHECKED,
     )
     return store
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "acceptance: end-to-end, subprocess-driven. Proves the contract composes across real "
+        "process boundaries; far too slow to be a per-mutant runner (B-02 T8 R3).",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Drop the acceptance tier when a mutation run asks for it.
+
+    `MEMENTO_MUTATION=1 uv run mutmut run` is the documented invocation. Every mutant otherwise pays
+    for the subprocess harness — dozens of interpreter starts per mutant — which took the sweep from
+    minutes to hours and measured nothing the in-process tests do not already measure. The
+    acceptance tier still runs in CI and in a plain `pytest`, which is where it belongs.
+    """
+    if not os.environ.get("MEMENTO_MUTATION"):
+        return
+    skip = pytest.mark.skip(reason="acceptance tier: excluded from the mutation runner (T8 R3)")
+    for item in items:
+        if "acceptance" in item.keywords:
+            item.add_marker(skip)
