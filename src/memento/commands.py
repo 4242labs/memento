@@ -212,7 +212,14 @@ def cmd_facts(args: argparse.Namespace) -> Outcome:
         # The compare-and-swap token. Read it, compose a proposal against these facts, then hand it
         # back to `consolidate --expect` — which is what stops a second writer's work being
         # silently overwritten by a proposal derived from a state that has since moved.
-        return _ok("fingerprint", fingerprint=facts_fingerprint(facts))
+        #
+        # Always taken from `read_facts`, never from the `--from-store` parse, because the write
+        # path compares against `read_facts` and nothing else. On a store with a `facts.json` the
+        # two differ the moment any fact is not projected into a document — the round-trip check
+        # still passes, because an unprojected key renders to nothing either way — and the token
+        # would then be one no consolidation could ever match. The adoption check above still runs;
+        # it just does not get to decide what the token is.
+        return _ok("fingerprint", fingerprint=facts_fingerprint(read_facts(store, adapter)))
     return _ok("facts", facts=facts)
 
 

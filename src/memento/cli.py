@@ -32,6 +32,7 @@ import sys
 
 from . import presentation
 from .commands import (
+    Outcome,
     EXIT_CLAIM_HELD,
     EXIT_DRAIN_REFUSED,
     EXIT_GATE_REJECTED,
@@ -60,6 +61,7 @@ from .commands import (
     cmd_status,
     cmd_view,
 )
+from .errors import MementoError, SecretsDetected
 from .locking import DEFAULT_CLAIM_TTL
 
 __all__ = [
@@ -241,7 +243,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    outcome = args.func(args)
+    try:
+        outcome = args.func(args)
+    except SecretsDetected:
+        # The one error that must stay loud. A credential reaching the store is not a status to
+        # report and move past, and `test_the_cli_edit_verb_is_gated` exists to hold that — which is
+        # why this handler names the exception it will not swallow rather than catching broadly.
+        raise
+    except (MementoError, OSError) as exc:
+        # Everything else becomes a contract exit. An uncaught exception here would hand an agent a
+        # traceback and the interpreter's own exit code, which makes "branch on the exit code" a
+        # promise this CLI does not keep — a missing `--adapter-file` and a prefix that cannot fit
+        # its required section both used to arrive that way.
+        outcome = Outcome(
+            code=EXIT_USAGE, kind="error", data={"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        )
     if getattr(args, "json", False):
         # The payload is complete on its own — including any error — so a parsing consumer never
         # has to read stderr to find out what happened.

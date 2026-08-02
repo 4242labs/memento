@@ -386,3 +386,78 @@ def _payloads(text: str) -> list[dict]:
         obj, index = decoder.raw_decode(text, index)
         out.append(obj)
     return out
+
+
+# ------------------------------------------------- nothing escapes as a traceback
+
+# An uncaught exception hands an agent a stack trace and the interpreter's own exit code, which
+# makes "branch on the exit code" a promise this CLI does not keep. Both of these arrived that way.
+
+
+def test_a_missing_adapter_file_is_an_exit_code_not_a_traceback(world):
+    assert world.run("prefix", "--adapter-file", str(world.tmp / "not-here.json")) == cli.EXIT_USAGE
+
+
+def test_a_required_prefix_section_that_cannot_fit_is_an_exit_code(world, tmp_path):
+    """`BudgetError` is a refusal to ship a degraded prefix, not a crash."""
+    tight = tmp_path / "tight.json"
+    tight.write_text(
+        json.dumps({
+            **SPEC,
+            "prefix_budget_tokens": 1,
+            "prefix_sections": [
+                {"name": "operator", "priority": 0, "document": "operator.md", "required": True}
+            ],
+        }),
+        encoding="utf-8",
+    )
+    world.run("consolidate", "--adapter-file", world.spec, "--proposal", world.proposal(FACTS),
+              "--session", "260802-000001", "--unchecked")
+
+    assert world.run("prefix", "--adapter-file", str(tight)) == cli.EXIT_USAGE
+
+
+def test_a_credential_still_raises_loudly_rather_than_becoming_an_exit_code(world, tmp_path):
+    """The one exception the handler names and refuses to swallow.
+
+    A credential reaching the store is not a status to report and move past. The blanket handler
+    this file's siblings asked for would have turned it into a quiet exit code, which is exactly the
+    regression `test_the_cli_edit_verb_is_gated` exists to hold.
+    """
+    from memento.errors import SecretsDetected
+    from support.fake_credentials import fake_credential
+
+    paste = tmp_path / "paste.md"
+    paste.write_text(fake_credential("aws-access-key") + "\n", encoding="utf-8")
+
+    with pytest.raises(SecretsDetected):
+        world.run("edit", "notes.md", "--from-file", str(paste))
+
+
+def test_the_fingerprint_is_the_one_the_write_path_compares_against(world):
+    """`--from-store` answers a different question, and must not get to answer this one.
+
+    A fact no document projects survives the round-trip check — an unprojected key renders to
+    nothing either way — but is absent from the parse. Taking the token from that parse hands back
+    a fingerprint no consolidation can ever match, and the agent redrives forever.
+    """
+    import contextlib
+    import io
+
+    from memento import MemoryStore, adapter_from_spec
+    from memento.writepath import facts_fingerprint, read_facts
+
+    unprojected = json.loads(json.dumps(FACTS))
+    unprojected["internal"] = {"seen": "3"}  # no declared document covers `internal`
+    world.run("consolidate", "--adapter-file", world.spec,
+              "--proposal", world.proposal(unprojected, "unprojected.json"),
+              "--session", "260802-000001", "--unchecked")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        assert world.run("facts", "--fingerprint", "--adapter-file", world.spec, "--from-store") == 0
+    printed = buf.getvalue().strip()
+
+    store = MemoryStore(world.store)
+    adapter = adapter_from_spec(SPEC)
+    assert printed == facts_fingerprint(read_facts(store, adapter))
