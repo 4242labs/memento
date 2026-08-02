@@ -37,7 +37,7 @@ from .drain import DrainGate
 from .errors import ClaimHeld, GateFailure, MementoError, SecretsDetected, StaleProposal
 from .forgetting import document_revisions, forget_fact, rollback_document, tombstone
 from .gates import Proposal
-from .locking import DEFAULT_CLAIM_TTL, CasClaim
+from .locking import DEFAULT_CLAIM_TTL, CasClaim, cas_claims
 from .queue import Queue
 from .readpath import assemble_prefix, recall
 from .spec import load_adapter
@@ -76,6 +76,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"session logs:   {len(store.session_logs())}")
     print(f"tombstones:     {len(read_tombstones(store))}")
     print(f"backup:         {'enabled -> ' + str(read_config(store).remote) if is_enabled(store) else 'off'}")
+    now = SystemClock().now()
+    for record in cas_claims(store.locks_dir):
+        # A claim outliving its holder is the cost of making it valid across processes, so the
+        # operator gets to see who holds what — and, for a stale one, that anyone may take it.
+        state = "stale, reclaimable" if record.is_stale(now) else f"pid {record.pid}"
+        print(f"claim:          {record.session} ({state})")
     if args.queue:
         queue = Queue(args.queue)
         pending = queue.pending_sessions()

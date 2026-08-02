@@ -353,3 +353,19 @@ def test_done_keeps_everything_when_no_adapter_says_otherwise(agent, tmp_path):
 
     assert agent("done", SESSION, "--queue", agent.queue).returncode == 0
     assert journal.exists()
+
+
+def test_status_shows_who_holds_a_claim_and_when_it_goes_stale(agent):
+    """A claim that outlives its holder is the cost of crossing process boundaries.
+
+    So the operator has to be able to see one, and to see that a stale one is anyone's to take —
+    otherwise a wedged-looking session has no explanation anywhere.
+    """
+    agent("status")
+    agent("claim", SESSION)
+    held = agent("status")
+    assert f"claim:          {SESSION} (pid " in held.stdout
+
+    agent("claim", "260802-999998", "--ttl", "0")
+    stale = agent("status")
+    assert "260802-999998 (stale, reclaimable)" in stale.stdout
