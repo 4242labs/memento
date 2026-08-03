@@ -4,9 +4,6 @@ The engine owns **mechanism**. The adapter owns everything **domain-shaped**. Th
 boundary, and it is the thing a second consumer will test — until Phase C proves it, treat the API
 as provisional and pin the engine by git SHA.
 
-Authority for everything here is [`adr-260731-memento-founding.md`](../adr-260731-memento-founding.md).
-Where this document and the ADR disagree, the ADR wins.
-
 ---
 
 ## What lives where
@@ -34,7 +31,7 @@ from memento import Adapter, FieldSpec, PrefixSection, RetentionPolicy
 LEVELS = ["A1", "A2", "B1", "B2", "C1", "C2"]
 
 ADAPTER = Adapter(
-    name="jubs",
+    name="app",
     # --- read path
     token_counter=PinnedLocalTokenizer(),        # must be local; see below
     prefix_budget_tokens=1500,
@@ -62,8 +59,8 @@ ADAPTER = Adapter(
 
 ## Declaring an adapter instead of importing one
 
-Everything above assumes the consumer is a Python application. The other consumer class 42labs has
-is an **agent** — markdown and a shell, no import statement anywhere. It declares its adapter in a
+Everything above assumes the consumer is a Python application. The other consumer class is an
+**agent** — markdown and a shell, no import statement anywhere. It declares its adapter in a
 JSON file and drives the engine through the CLI:
 
 ```json
@@ -205,7 +202,7 @@ If your taxonomy identifies members some other way, declare it — the floor the
 instead of refusing it:
 
 ```python
-ADAPTER = Adapter(name="jubs", identity_keys=("lang", "id", "topic", "name"), ...)
+ADAPTER = Adapter(name="app", identity_keys=("lang", "id", "topic", "name"), ...)
 ```
 
 Keys may contain dots. `node.js`, `pt.br`, and `arXiv:2604.06710` are ordinary data; paths are
@@ -337,7 +334,7 @@ A stale proposal raises `StaleProposal`, defers the session, and leaves the newe
 
 ## Adopting an existing store
 
-The store layout is byte-compatible with jubs' — adoption moves a path, not data. One thing needs
+Adoption moves a path, not data — the engine reads a pre-existing store in place. One thing needs
 attention: on a store that predates the engine there is no `.memento/facts.json`, so the
 anti-erosion baseline would be empty on the first consolidation, and that first consolidation could
 erode freely.
@@ -391,7 +388,7 @@ under a later one.
 ## Retention
 
 `RetentionPolicy` governs the transcript material in the queue, which is a bigger personal-data pile
-than the store itself. `keep_everything=True` is jubs' stated policy. Pruning requires both an
+than the store itself. `keep_everything=True` is a perfectly good policy. Pruning requires both an
 explicit policy and a consolidated marker.
 
 "Not persisted in the memory store" never means "transient". State your policy out loud.

@@ -1,95 +1,102 @@
 # MEMENTO
 
-> *"Remember Sammy Jankis."* — long-term memory/relationship engine for 42labs agents.
+> *"Remember Sammy Jankis."*
 
-An LLM has anterograde amnesia: total memory loss between sessions. MEMENTO is the annotated Polaroids and tattoos — a shared engine any 42labs product attaches to remember, and build a relationship with, *its* operator/user.
+Long-term memory for LLM agents and apps. An LLM has anterograde amnesia — total memory loss
+between sessions. MEMENTO is the annotated Polaroids and tattoos: a small engine your agent or
+app attaches to remember, and build a relationship with, its user across sessions.
 
-**One engine, N independent memories.** Shared code, never shared data: each consumer project runs its own instance against its own isolated store (a git-ignored `memento/` directory inside that project's app repo). No central service, no compartments.
+**One engine, N independent memories.** Shared code, never shared data: each consumer runs its
+own instance against its own isolated store — a git-ignored directory of plain, human-readable
+files inside the consumer's own repo. No central service, no database, no vector store, no
+tenancy seam.
 
-## Design
+## What makes it different
 
-The founding ADR — [`adr-260731-memento-founding.md`](./adr-260731-memento-founding.md) — is the authority (SIGNED 2026-07-31; hardened through six adversarial review rounds). Headlines:
+Most agent-memory systems trust the model to write its own memory. MEMENTO doesn't. The model
+*proposes*; deterministic gates *decide*:
 
-- **Store:** plain human-readable files — append-only JSONL event logs + projected markdown documents; status folded at read time, never stored; `document_replaced` events give documents history + rollback; git only on explicit backup opt-in.
-- **Write path:** LLM-distilled consolidation accepted **all-or-nothing** through deterministic gates (schema, derived identity, monotonicity/anti-erosion floor — adapters may tighten, never disable). Runs deferred in a spawn-gated detached subprocess — never on the interactive path.
-- **Read path:** token-budgeted always-loaded core prefix + selective recall. The archive is never bulk-loaded.
-- **Forgetting:** tombstone, never delete; reconsolidation on retrieval; operator `view`/`edit`/`forget` as first-class verbs.
-- **Eval:** deterministic continuity harness (no LLM in the judging loop) gates CI; live tier informs only. No real operator data in any corpus, ever.
+- **Validated writes, all-or-nothing.** An LLM-distilled consolidation is accepted only if it
+  passes every gate: secrets scan, schema, derived identity, and a monotonicity/anti-erosion
+  floor (facts shrink only by explicit tombstone; ordered scales move at most one step).
+  Adapters may tighten the rules, never disable them. On failure nothing is written.
+- **Append-only history.** JSONL event logs plus projected markdown documents; status is folded
+  at read time, never stored. `forget` writes a tombstone — nothing in this engine deletes an
+  event. Document replacements carry the prior content, so every document has history and
+  rollback.
+- **Off the interactive path.** Session exit does one cheap thing: enqueue. Consolidation runs
+  later — deferred, claim-protected, compare-and-swap guarded — never while the user waits.
+- **Budgeted reads.** A token-budgeted, always-loaded core prefix plus selective recall. The
+  archive is never bulk-loaded into context.
+- **Human-legible.** The store is markdown and JSONL you can open, `view`, `edit`, and audit.
+  Backup to a private git remote is an explicit opt-in, never a default.
 
 ## Install
 
-Python ≥ 3.11, `uv`-managed, no runtime dependencies. Consumed as a git-pinned dependency — no PyPI,
-no semver ceremony until a second consumer proves the boundary (Phase C).
+Python ≥ 3.11, zero runtime dependencies. Consumed as a git-pinned dependency — the API is
+provisional, so pin by commit SHA (the pin covers the prompt templates too; they are
+SHA-verified at load).
 
 ```toml
 # in the consumer's pyproject.toml
 dependencies = ["memento @ git+https://github.com/4242labs/memento.git@<sha>"]
 ```
 
-The pin covers the prompt templates too: they are SHA-verified at load, so they cannot drift under a
-consumer that pinned the engine.
+Or install the CLI on its own:
+
+```bash
+uv tool install "memento @ git+https://github.com/4242labs/memento@<sha>"
+```
+
+For development:
 
 ```bash
 uv sync --extra dev
-uv run pytest              # the deterministic tier; no model, no credentials, no token spend
+uv run pytest    # deterministic tier; no model, no credentials, no token spend
 ```
 
-## API
+## Two ways in
 
-Full adapter reference: [`docs/adapter-contract.md`](./docs/adapter-contract.md).
+### 1. Agents — the CLI is the API
 
-### Store
+An agent consumer is markdown and a shell: no Python, no imports. It declares its adapter in a
+JSON file and drives the whole session lifecycle through the CLI — `journal` → `enqueue` at
+session exit, then later: `pending --gate-check` → `claim` → `prefix` → distill → `consolidate`
+→ `done` → `release`. Same gates, same compare-and-swap; the agent is simply the distiller as
+well as the writer.
 
-```python
-from memento import MemoryStore, DocumentWrite
-
-store = MemoryStore("./memento")           # store_root IS the namespace; there is no tenancy seam
-
-store.append("errors/fr", [{"id": "fr-x", "pattern": "je suis 20 ans"}],
-             session="260731-1354", batch="consolidation")   # idempotent on (session, batch)
-store.folded("errors/fr")                  # status folded from history, never stored
-store.replace_documents([DocumentWrite("profile.md", text)],
-                        session=..., batch=...)              # atomic, and audited
-store.document_history("profile.md")       # every document_replaced event, with prior content
+```bash
+memento --store ./memento prefix --adapter-file ./adapter.json --json
+memento --store ./memento journal 260802-1400 --queue ./memento/.queue --text "..." --json
+memento --store ./memento enqueue 260802-1400 --queue ./memento/.queue --json
 ```
 
-### Reading
+`--json` output and the exit codes are the contract; console prose is not. The full lifecycle,
+exit codes included: [`docs/agent-consumers.md`](./docs/agent-consumers.md).
+
+### 2. Python applications — the library
 
 ```python
-from memento import assemble_prefix, recall
+from memento import MemoryStore, assemble_prefix, recall, Proposal, apply_consolidation
+
+store = MemoryStore("./memento")           # store_root IS the namespace
 
 prefix = assemble_prefix(store, adapter)   # budgeted; deterministic truncation; never silent
-prefix.text, prefix.tokens, prefix.truncated
 recall(store, "kites", limit=8)            # selective; the archive is never bulk-loaded
-```
-
-### Writing
-
-```python
-from memento import Proposal, apply_consolidation
 
 apply_consolidation(store, adapter, Proposal(facts=..., entries=..., tombstones=...),
                     session=..., batch=..., queue=queue, sink=sink,
-                    expected_fingerprint=facts_fingerprint(state.facts))   # required
+                    expected_fingerprint=...)   # all-or-nothing through the gates
 ```
 
-All-or-nothing through the gates: secrets → schema → derived identity → anti-erosion floor →
-ordered scales → the adapter's own rules. On failure nothing is written, the session is marked
-`deferred`, and a FLAG is raised. `GateFailure.violations` carries every rule that fired.
+Deferred consolidation runs in a spawn-gated detached subprocess — `queue.close_and_enqueue()`
+at session exit, `spawn_drain(...)` later. The adapter — taxonomy, prefix sections, token
+budget, retention, tightened rules — is yours to declare; the full boundary is in
+[`docs/adapter-contract.md`](./docs/adapter-contract.md).
 
-### Deferred consolidation
+## Operator verbs
 
-```python
-queue.close_and_enqueue(session)           # session exit: this and nothing else
-spawn_drain(store_root=..., queue_root=..., adapter_ref="app.memory:ADAPTER",
-            distiller_ref="app.memory:DISTILLER",
-            gate=DrainGate(prefix_materialized=True, idle_seconds=idle))
-```
-
-Detached subprocess, spawn-gated by the parent, `flock` claim per session, store lock never held
-across the model call, `consolidated` marker written last.
-
-### Operator verbs
+The person the memory is *about* gets first-class controls:
 
 ```bash
 memento --store ./memento status
@@ -97,29 +104,12 @@ memento --store ./memento view profile.md
 memento --store ./memento history profile.md
 memento --store ./memento rollback profile.md
 memento --store ./memento edit profile.md
-memento --store ./memento forget languages/de --adapter app.memory:ADAPTER
+memento --store ./memento forget languages/de --adapter-file ./adapter.json
 memento --store ./memento recall kites --since 2026-07-01T00:00:00Z --budget 400
 memento --store ./memento backup --remote git@github.com:you/private-store.git --yes
 ```
 
-`forget` writes a tombstone; nothing in this engine deletes an event.
-
-### Agent consumers
-
-The second consumer class is an agent — markdown and a shell, no Python. For it the CLI *is* the
-API, and the whole session lifecycle is there: `journal` → `enqueue` → `pending --gate-check` →
-`claim` → `prefix` → `consolidate` → `commit` → `done` → `release`. Same gates, same
-compare-and-swap, same floor; the agent is simply the distiller as well as the writer.
-
-```bash
-memento --store ./memento pending --queue ./q --gate-check --idle-seconds 30 --prefix-materialized
-TOKEN=$(memento --store ./memento claim 260802-1400)
-memento --store ./memento facts --from-store --adapter-file ./adapter.json   # adoption: bytes win
-```
-
-Full contract, exit codes included: [`docs/agent-consumers.md`](./docs/agent-consumers.md).
-
-### Store layout
+## Store layout
 
 ```
 <store_root>/
@@ -129,21 +119,17 @@ Full contract, exit codes included: [`docs/agent-consumers.md`](./docs/agent-con
   .memento/                     engine area
     schema_version  facts.json  documents.jsonl  tombstones.jsonl
     objects/  locks/
+  .queue/                       journals, pending log, claims
 ```
 
-Byte-compatible with today's `jubs-memory`: adoption moves a path, not data. The default
-directory is `memento/` (ADR amendment A1, operator 2026-08-02) — a default, not a
-requirement: `store_root` is whatever the consumer passes, and the engine hard-codes neither
-name.
+Plain files. Git-ignore the store with a **root-anchored** pattern (`/memento/`, never
+`memento/` — the bare form matches a source package of that name at any depth).
 
 ## Status
 
-Phase A (clean-room engine build) — [`blocks/a-01-engine.md`](./blocks/a-01-engine.md) — implemented,
-deterministic tier green. Phase B (first consumer: jubs) —
-[`blocks/b-01-jubs-adoption.md`](./blocks/b-01-jubs-adoption.md) — not started. Phase C (second
-consumer proves the adapter boundary) — unscoped by design.
-
-The API is provisional until Phase C. Pin by SHA.
+The engine is built, gated by a deterministic test tier in CI, and in production use by both
+consumer classes (a Python application and shell-only agents). The API is provisional — pin by
+SHA; no PyPI release yet.
 
 ## License
 

@@ -38,7 +38,7 @@ REC_DEFERRED = "deferred"
 class RetentionPolicy:
     """What happens to a session's transcript material once it has been consolidated.
 
-    `keep_everything` is jubs' stated policy (operator, 2026-07-31). "Not persisted in the memory
+    `keep_everything` is a perfectly good policy. "Not persisted in the memory
     store" is never to be read as "transient" — the material sits here until a policy says otherwise.
     """
 

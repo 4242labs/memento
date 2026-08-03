@@ -1,7 +1,7 @@
 # MEMENTO for agent consumers
 
 The engine's first consumer class is a Python application. Its second is an **agent**: markdown and
-a shell, no import statement anywhere — `tortuga/agents/advisor-legal` is the shape. For that
+a shell, no import statement anywhere. For that
 consumer the CLI is not a convenience wrapper around the API. It **is** the API.
 
 Nothing here buys a weaker engine. The gates, the secrets scan, the compare-and-swap and the drain
@@ -298,5 +298,5 @@ no per-line history, so including one would date it to whenever you happened to 
 * **`--adapter module:attribute`.** It imports and executes code. Use `--adapter-file`.
 * **A promise about console text.** Prose is not contractual; `--json` and the exit code are.
 * **A way to skip the gate check.** Exit 7 means later, not louder.
-* **A weaker floor.** Every write goes through the same gates as jubs'.
+* **A weaker floor.** Every write goes through the same gates as a library caller's.
 * **Deletion.** `forget` writes a tombstone. Nothing in this engine deletes an event.
