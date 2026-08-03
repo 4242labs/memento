@@ -304,6 +304,40 @@ def expand(
     return out
 
 
+def member_gaps(
+    obj: Any, path: Path, identity_keys: Sequence[str] = DEFAULT_IDENTITY_KEYS
+) -> list[Path]:
+    """Concrete paths where an existing collection member lacks the declared field.
+
+    This is what `required` means on a `*`-bearing path: every member that exists carries the
+    field. It never means the collection is non-empty — a new store starts with every collection
+    empty and its first consolidation must be able to say so. Non-emptiness, where it is genuinely
+    wanted, is `required_members`' declaration, not this one's.
+
+    An absent or unaddressable collection contributes nothing: absence is anti-erosion's business
+    and unaddressable members are the floor's.
+    """
+    if "*" not in path:
+        found, _ = get(obj, path, identity_keys)
+        return [] if found else [path]
+
+    cut = path.index("*")
+    head, tail = path[:cut], path[cut + 1 :]
+    found, node = get(obj, head, identity_keys)
+    if not found:
+        return []
+    view = membership(node, identity_keys)
+    if view is None or view.problem is not None:
+        return []
+
+    out: list[Path] = []
+    for key, value in view.members.items():
+        concrete = head + (key,)
+        if tail:
+            out.extend(concrete + gap for gap in member_gaps(value, tail, identity_keys))
+    return out
+
+
 def _covered(path: Path, allowed: set[str]) -> bool:
     """True when `path` — or an ancestor of it — has been tombstoned.
 
@@ -377,13 +411,18 @@ class SchemaRule:
     def check(self, current: StoreState, proposal: Proposal) -> list[Violation]:
         out: list[Violation] = []
         for declared, spec in self.spec.items():
-            matches = expand(proposal.facts, parse_declared(declared), self.identity_keys)
-            if not matches:
-                if spec.required:
+            path = parse_declared(declared)
+            matches = expand(proposal.facts, path, self.identity_keys)
+            if spec.required:
+                if "*" in path:
+                    out.extend(
+                        Violation(self.name, render_path(gap), "required field is missing")
+                        for gap in member_gaps(proposal.facts, path, self.identity_keys)
+                    )
+                elif not matches:
                     out.append(Violation(self.name, declared, "required field is missing"))
-                continue
-            for path, value in matches:
-                out.extend(field_violations(spec, value, self.name, render_path(path)))
+            for concrete, value in matches:
+                out.extend(field_violations(spec, value, self.name, render_path(concrete)))
         return out
 
 
