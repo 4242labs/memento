@@ -240,6 +240,11 @@ you would find out after the model already produced something.
 The anti-erosion floor is underneath all of it and cannot be removed. An adapter that declares
 nothing still gets it.
 
+`required` on a `*`-bearing path means every member that *exists* carries the field — never that
+the collection is non-empty. An empty or absent collection is not a violation: a new store starts
+with every collection empty, and its first consolidation must be able to say so. Non-emptiness,
+where it is genuinely wanted, is `required_members`' declaration.
+
 ### `collections`, and why the parser needs it
 
 A mapping and a list of identified members render to *identical* markdown — both are labelled

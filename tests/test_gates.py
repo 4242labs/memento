@@ -13,7 +13,7 @@ import pytest
 from conftest import base_facts, make_adapter, render_documents
 from memento.writepath import UNCHECKED
 from memento import Adapter, GateFailure, Proposal, RuleSet, apply_consolidation, current_state
-from memento.gates import AntiErosionFloor, NoEntryRewrite, OrderedScaleFloor
+from memento.gates import AntiErosionFloor, FieldSpec, NoEntryRewrite, OrderedScaleFloor
 
 
 def _propose(facts, **kwargs):
@@ -166,6 +166,47 @@ def test_a_schema_violation_is_rejected(seeded, adapter):
 
     with pytest.raises(GateFailure, match="schema|scale"):
         apply_consolidation(seeded, adapter, _propose(bad), session="s2", batch="b2", expected_fingerprint=UNCHECKED)
+
+
+def test_a_required_member_field_is_vacuous_over_an_empty_collection(store):
+    """`gates.*.gate: required` must not demand that `gates` be non-empty.
+
+    A new store starts with every collection empty, and its first consolidation must be able to say
+    so. Non-emptiness is `required_members`' business, never `required`'s.
+    """
+    adapter = make_adapter(schema={"gates.*.gate": FieldSpec(type=str, required=True)})
+    facts = base_facts()
+    facts["gates"] = []
+    assert apply_consolidation(
+        store, adapter, _propose(facts), session="s1", batch="b1", expected_fingerprint=UNCHECKED
+    ).ok
+
+
+def test_a_required_member_field_is_vacuous_when_the_collection_is_absent(store):
+    adapter = make_adapter(schema={"gates.*.gate": FieldSpec(type=str, required=True)})
+    assert apply_consolidation(
+        store, adapter, _propose(base_facts()), session="s1", batch="b1", expected_fingerprint=UNCHECKED
+    ).ok
+
+
+def test_a_member_missing_a_required_field_is_rejected_beside_complete_siblings(store):
+    """The false-negative half of the same defect: a complete sibling used to mask a gapped member."""
+    adapter = make_adapter(schema={"gates.*.gate": FieldSpec(type=str, required=True)})
+    facts = base_facts()
+    facts["gates"] = [{"id": "a", "gate": "archive"}, {"id": "b"}]
+    with pytest.raises(GateFailure, match="schema.*required field is missing"):
+        apply_consolidation(
+            store, adapter, _propose(facts), session="s1", batch="b1", expected_fingerprint=UNCHECKED
+        )
+
+
+def test_a_required_scalar_field_still_fires_when_absent(store):
+    """The non-wildcard meaning of `required` — this exact path must exist — is unchanged."""
+    adapter = make_adapter(schema={"profile.timezone": FieldSpec(type=str, required=True)})
+    with pytest.raises(GateFailure, match="schema.*required field is missing"):
+        apply_consolidation(
+            store, adapter, _propose(base_facts()), session="s1", batch="b1", expected_fingerprint=UNCHECKED
+        )
 
 
 def test_a_renamed_entry_is_caught_by_the_derived_identity_check(seeded, adapter):
