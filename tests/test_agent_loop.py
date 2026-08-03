@@ -2,7 +2,7 @@
 
 The engine's second consumer class has no Python: it is markdown and a shell. So nothing in this
 module imports `memento` to do the work — every step goes out through `subprocess` and comes back as
-an exit code, exactly as it does for `tortuga/agents/advisor-legal`. A test that reached into the
+an exit code, exactly as it does for a real agent. A test that reached into the
 library would prove the library works and say nothing about the contract an agent actually has.
 
 The claim tests are the sharp end. `SessionClaim` holds an `flock` for the acquiring process's
@@ -10,7 +10,7 @@ lifetime, which is right for the drain and useless here: an agent's consolidatio
 `memento` invocations with the model's own thinking in between, so a claim that released when the
 command exited would let a second front-end pay for the same consolidation. `test_a_process_scoped_
 claim_does_not_exclude_across_processes` is that defect, demonstrated, and it is what the CAS claim
-had to beat before it was written (handoff §5.1).
+had to beat before it was written.
 """
 
 from __future__ import annotations
@@ -207,7 +207,7 @@ def _claim_in_a_subprocess(
     Spawning six interpreters takes far longer than the read-modify-write they contend over, so
     without it they arrive one at a time and the test passes against a claim with no mutual
     exclusion at all — the exact shape of the three regression tests that once passed against the
-    code they were written to guard (handoff §5.1).
+    code they were written to guard.
     """
     # Sleep to the barrier, then spin only for the last few milliseconds. A spin across the whole
     # wait pegs a core per process, and six of those under a mutation run — which is itself already

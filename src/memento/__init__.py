@@ -1,4 +1,4 @@
-"""MEMENTO — long-term memory/relationship engine for 42labs agents.
+"""MEMENTO — long-term memory/relationship engine for LLM agents and apps.
 
 One engine, N independent memories. Shared code, never shared data: each consumer runs its own
 instance against its own isolated store. There is no central service and no multi-tenant seam —
@@ -15,7 +15,8 @@ The short version of the shape:
 
     apply_consolidation(store, adapter, proposal, ...)   # all-or-nothing, through the gates
 
-Authority for every decision here is `adr-260731-memento-founding.md` in this repo.
+The adapter boundary is documented in `docs/adapter-contract.md`; the shell-only consumer
+contract in `docs/agent-consumers.md`.
 """
 
 from __future__ import annotations

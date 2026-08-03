@@ -75,7 +75,7 @@ def check_adoption(
         # verified — it has been *unable to try*, and every comparison below is then vacuously
         # equal. Reporting that as adoptable hands the anti-erosion floor an empty baseline, which
         # is the one free erosion this module exists to prevent. Unverifiable fails closed, exactly
-        # as the floor does (handoff §5.4).
+        # as the floor does.
         return _reported(sink, AdoptionReport(diverged=tuple(on_disk), unverified=tuple(on_disk)))
 
     # Everything the renderer produced, plus every document the adapter *claims* to project that is

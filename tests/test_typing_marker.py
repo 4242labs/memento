@@ -16,7 +16,7 @@ def test_the_package_ships_a_py_typed_marker():
     ...`, and the usual fix is `ignore_missing_imports`, which silently turns the whole engine
     into `Any` on the consumer's side: `apply_consolidation`'s required `expected_fingerprint`,
     the `Proposal` shape, the `FieldSpec` kwargs — all unchecked, in the one place a consumer is
-    most likely to get the contract wrong. jubs hit exactly this in B-01.
+    most likely to get the contract wrong. The first consumer hit exactly this during adoption.
     """
     assert (Path(memento.__file__).parent / "py.typed").is_file()
 
