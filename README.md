@@ -14,10 +14,10 @@ own instance against its own isolated store — a git-ignored directory of plain
 files inside the consumer's own repo. No central service, no database, no vector store, no
 tenancy seam.
 
-## What makes it different
+## Design rules
 
-Most agent-memory systems trust the model to write its own memory. MEMENTO doesn't. The model
-*proposes*; deterministic gates *decide*:
+The model *proposes*; deterministic gates *decide*. Five rules follow from that, and each is
+enforced in code rather than asked for in a prompt:
 
 - **Validated writes, all-or-nothing.** An LLM-distilled consolidation is accepted only if it
   passes every gate: secrets scan, schema, derived identity, and a monotonicity/anti-erosion
@@ -128,7 +128,7 @@ memento --store ./memento backup --remote git@github.com:you/private-store.git -
 Plain files. Git-ignore the store with a **root-anchored** pattern (`/memento/`, never
 `memento/` — the bare form matches a source package of that name at any depth).
 
-## Prior art
+## What we read
 
 We didn't invent much here. We read widely while building MEMENTO, and these are the papers that
 changed what we shipped — some gave us the architecture, some named a failure mode we hadn't seen
@@ -148,12 +148,6 @@ coming, some pointed at a road we're still walking toward. Our thanks to their a
   Agents](https://arxiv.org/abs/2605.16045) — Dai et al., 2026
 - [MemSyco-Bench: Benchmarking Sycophancy in Agent Memory](https://arxiv.org/abs/2607.01071) —
   Xiang et al., 2026
-
-## Status
-
-The engine is built, gated by a deterministic test tier in CI, and in production use by both
-consumer classes (a Python application and shell-only agents). The API is provisional — pin by
-SHA; no PyPI release yet.
 
 ## License
 
