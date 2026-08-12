@@ -127,40 +127,24 @@ Plain files. Git-ignore the store with a **root-anchored** pattern (`/memento/`,
 
 ## Prior art
 
-MEMENTO is not an implementation of a paper. It is an engineering response to a field, and the
-founding ADR records which work moved which decision.
+We didn't invent much here. We read widely while building MEMENTO, and these are the papers that
+changed what we shipped — some gave us the architecture, some named a failure mode we hadn't seen
+coming, some pointed at a road we're still walking toward. Our thanks to their authors.
 
-**Shaped the design:**
-
-- [MemGPT: Towards LLMs as Operating Systems](https://arxiv.org/abs/2310.08560) (Packer et al.,
-  2023) — the two-tier shape: a small always-resident core plus a larger archive paged in on
-  demand. MEMENTO's budgeted core prefix + selective recall is this idea without the OS metaphor.
+- [MemGPT: Towards LLMs as Operating Systems](https://arxiv.org/abs/2310.08560) — Packer et al.,
+  2023
 - [Continuum Memory Architectures for Long-Horizon LLM Agents](https://arxiv.org/abs/2601.09913)
-  (Logan, 2026) — memory has to be *written, updated, and chained*, not merely retrieved. The
-  reason the write path here is a first-class gated pipeline rather than an embedding upsert.
-- [MemSyco-Bench: Benchmarking Sycophancy in Agent Memory](https://arxiv.org/abs/2607.01071)
-  (Xiang et al., 2026) — names the failure mode this engine exists to prevent: retrieved memory
-  bending an agent toward the user and away from accuracy. Our defense is that the model never
-  decides what gets written. Deterministic gates do.
-- [ATANT: An Evaluation Framework for AI Continuity](https://arxiv.org/abs/2604.06710)
-  (Tanguturi, 2026) — continuity measured without cross-contamination between narratives.
-  Motivated an eval harness that judges **without an LLM in the loop**.
-
-**Considered, deliberately deferred** — promising and data-hungry; revisit when there is enough
-history to abstract over:
-
-- [TiMem: Temporal-Hierarchical Memory Consolidation](https://arxiv.org/abs/2601.02845) (Li et
-  al., 2026) · [RecMem: Recurrence-based Memory Consolidation](https://arxiv.org/abs/2605.16045)
-  (Dai et al., 2026) · [Human-Inspired Memory Architecture for LLM
-  Agents](https://arxiv.org/abs/2605.08538) (Kerestecioglu et al., 2026)
-
-RecMem's "consolidate on recurrence, not on every interaction" is close kin to our deferred
-drain; the sleep-phase framing in the human-inspired line presumes an always-on server, which is
-exactly the premise MEMENTO does not accept — hence deferred, non-blocking drains and no daemon.
-
-**Not adopted:** Mem0, Zep/Graphiti, and Letta wholesale — hosted or heavier, data custody
-outside user-owned plain files, vector/graph-first for a scale we do not have. The store
-interface stays shaped so one could be mounted as a backend later.
+  — Logan, 2026
+- [TiMem: Temporal-Hierarchical Memory Consolidation for Long-Horizon Conversational
+  Agents](https://arxiv.org/abs/2601.02845) — Li et al., 2026
+- [ATANT: An Evaluation Framework for AI Continuity](https://arxiv.org/abs/2604.06710) —
+  Tanguturi, 2026
+- [Human-Inspired Memory Architecture for LLM Agents](https://arxiv.org/abs/2605.08538) —
+  Kerestecioglu et al., 2026
+- [RecMem: Recurrence-based Memory Consolidation for Efficient and Effective Long-Running LLM
+  Agents](https://arxiv.org/abs/2605.16045) — Dai et al., 2026
+- [MemSyco-Bench: Benchmarking Sycophancy in Agent Memory](https://arxiv.org/abs/2607.01071) —
+  Xiang et al., 2026
 
 ## Status
 
