@@ -14,10 +14,10 @@ own instance against its own isolated store — a git-ignored directory of plain
 files inside the consumer's own repo. No central service, no database, no vector store, no
 tenancy seam.
 
-## What makes it different
+## Design rules
 
-Most agent-memory systems trust the model to write its own memory. MEMENTO doesn't. The model
-*proposes*; deterministic gates *decide*:
+The model *proposes*; deterministic gates *decide*. Five rules follow from that, and each is
+enforced in code rather than asked for in a prompt:
 
 - **Validated writes, all-or-nothing.** An LLM-distilled consolidation is accepted only if it
   passes every gate: secrets scan, schema, derived identity, and a monotonicity/anti-erosion
