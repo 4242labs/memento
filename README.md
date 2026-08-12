@@ -1,5 +1,8 @@
 # MEMENTO
 
+[![Project Status: Active](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+[![Maintenance](https://img.shields.io/badge/maintenance-passively--maintained-yellowgreen.svg)](CONTRIBUTING.md)
+
 > *"Remember Sammy Jankis."*
 
 Long-term memory for LLM agents and apps. An LLM has anterograde amnesia — total memory loss
