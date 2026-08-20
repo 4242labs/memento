@@ -12,8 +12,15 @@ import pytest
 
 from conftest import base_facts, make_adapter, render_documents
 from memento.writepath import UNCHECKED
-from memento import Adapter, GateFailure, Proposal, RuleSet, apply_consolidation, current_state
-from memento.gates import AntiErosionFloor, FieldSpec, NoEntryRewrite, OrderedScaleFloor
+from memento import Adapter, GateFailure, Proposal, RuleSet, StoreState, apply_consolidation, current_state
+from memento.errors import BudgetError
+from memento.gates import (
+    AntiErosionFloor,
+    DocumentBudgetRule,
+    FieldSpec,
+    NoEntryRewrite,
+    OrderedScaleFloor,
+)
 
 
 def _propose(facts, **kwargs):
@@ -326,3 +333,52 @@ def test_adapter_rules_can_tighten(seeded):
 
     with pytest.raises(GateFailure, match="no-new-languages"):
         apply_consolidation(seeded, strict, _propose(grown), session="s2", batch="b2", expected_fingerprint=UNCHECKED)
+
+
+# ----------------------------------------------------- document budget (opt-in)
+
+
+def test_the_document_budget_rule_is_a_consolidation_wall_not_a_trim():
+    """Over the ceiling, the whole proposal is refused — curation is the distiller's job."""
+    rule = DocumentBudgetRule(12)
+    assert rule.check(StoreState(), _propose({}, documents={"profile.md": "short"})) == []
+
+    (violation,) = rule.check(StoreState(), _propose({}, documents={"profile.md": "word " * 300}))
+    assert violation.rule == "document-budget"
+    assert "ceiling" in violation.detail
+
+
+def test_the_document_budget_rule_counts_only_the_documents_it_names():
+    rule = DocumentBudgetRule(12, documents=["profile.md"])
+    proposal = _propose({}, documents={"profile.md": "short", "interests.md": "word " * 300})
+    assert rule.check(StoreState(), proposal) == []
+
+
+def test_the_document_budget_rule_refuses_a_network_counter():
+    class Remote:
+        name = "remote-counter"
+        is_local = False
+
+        def count(self, text):  # pragma: no cover - never reached
+            raise AssertionError("a gate made a network call")
+
+    with pytest.raises(BudgetError, match="not local"):
+        DocumentBudgetRule(100, counter=Remote())
+
+
+def test_the_document_budget_rule_gates_the_rendered_projection(store):
+    """The write path gates what will actually land — the rendering, not just the override map."""
+    tight = make_adapter(rules=(DocumentBudgetRule(5),))
+    with pytest.raises(GateFailure, match="document-budget"):
+        apply_consolidation(store, tight, _propose(base_facts()), session="s1", batch="b1", expected_fingerprint=UNCHECKED)
+
+    roomy = make_adapter(rules=(DocumentBudgetRule(100_000),))
+    assert apply_consolidation(store, roomy, _propose(base_facts()), session="s2", batch="b2", expected_fingerprint=UNCHECKED).ok
+
+
+def test_a_document_budget_naming_a_missing_document_fails_closed():
+    """A typo in `documents=` must not silently disable the ceiling."""
+    rule = DocumentBudgetRule(1000, documents=["profil.md"])
+    (violation,) = rule.check(StoreState(), _propose({}, documents={"profile.md": "short"}))
+    assert violation.rule == "document-budget"
+    assert violation.path == "profil.md"

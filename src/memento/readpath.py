@@ -5,9 +5,11 @@ local counter. On overflow the engine truncates in the adapter's declared priori
 so. Unbounded concatenation is the defect this replaces — prefix growth silently erodes prompt-cache
 economics, and "silently" is the part that makes it a bug rather than a cost.
 
-(b) **Selective recall**: search over events and documents on demand. The archive is never
-bulk-loaded, and a hit needs an actual term match — a query that matches nothing returns nothing
-rather than the nearest thing lying around.
+(b) **Selective recall**: search over events, documents, and session logs on demand. The archive is
+never bulk-loaded, and a hit needs an actual term match — a query that matches nothing returns
+nothing rather than the nearest thing lying around. The distilled store answers "what do I know";
+the session logs answer "what happened" — verbatim, so recall can settle "did we discuss X?"
+without a consolidation having thought X worth keeping.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from typing import Any, Iterable, Sequence
 from .errors import BudgetError
 from .flags import PREFIX_TRUNCATED, RECALL_TRUNCATED, Flag, FlagSink
 from .fold import ACTIVE, fold
-from .store import MemoryStore
+from .store import SESSIONS_DIR, MemoryStore
 
 SEPARATOR = "\n\n"
 _WORD = re.compile(r"\w+", re.UNICODE)
@@ -169,12 +171,12 @@ def _truncate_to_fit(text: str, counter: Any, allowance: int) -> tuple[str, int]
 
 @dataclass(frozen=True)
 class RecallHit:
-    source: str  # "event" | "document"
-    location: str  # stream id or document name
+    source: str  # "event" | "document" | "session"
+    location: str  # stream id, document name, or session-log path
     entry_id: str | None
     text: str
     score: int
-    ts: str | None = None  # last-seen timestamp, for event hits; documents carry none
+    ts: str | None = None  # last-seen timestamp, for event hits; documents and sessions carry none
 
     def render(self) -> str:
         where = f"{self.location}:{self.entry_id}" if self.entry_id else self.location
@@ -226,6 +228,22 @@ def _score(text: str, terms: Sequence[str]) -> int:
     return sum(1 for t in set(terms) if t in haystack)
 
 
+def _line_hits(content: str | None, terms: Sequence[str], *, source: str, location: str) -> list[RecallHit]:
+    """Score prose line by line. Shared by documents and session logs; both are undated at the line."""
+    if not content:
+        return []
+    out: list[RecallHit] = []
+    for line in content.splitlines():
+        if not line.strip():
+            continue
+        score = _score(line, terms)
+        if score:
+            out.append(
+                RecallHit(source=source, location=location, entry_id=None, text=line.strip(), score=score)
+            )
+    return out
+
+
 def _within(ts: str | None, since: str | None, until: str | None) -> bool:
     """Date-range filter on ISO-8601 timestamps, compared as text.
 
@@ -251,6 +269,7 @@ def recall(
     limit: int | None = None,
     streams: Iterable[str] | None = None,
     documents: Iterable[str] | None = None,
+    sessions: Iterable[str] | None = (),
     include_retired: bool = False,
     keys: Iterable[str] | None = None,
     since: str | None = None,
@@ -259,13 +278,16 @@ def recall(
     counter: Any = None,
     sink: FlagSink | None = None,
 ) -> RecallResult:
-    """Selective recall over events and documents.
+    """Selective recall over events, documents, and session logs.
 
     A hit must share at least one term with the query. That is what keeps a probe for one topic from
     dragging in a neighbouring one as the store grows — the archive is searched, never surveyed.
 
     Narrowed two ways, and they are different questions. **Filters** — `streams`, `documents`,
-    `keys`, `since`/`until` — say what is eligible at all. **`budget`** says what the answer may
+    `sessions`, `keys`, `since`/`until` — say what is eligible at all. `sessions` takes filenames as
+    listed by `store.session_logs()`, and unlike the others it defaults to *none*: a transcript is
+    chatty by nature, and line-scored verbatim prose would evict curated document and event hits
+    under `limit` and `budget`. Pass `None` for every log, or name the ones you mean. **`budget`** says what the answer may
     cost once assembled: an agent pastes recall output into its own context, so a bound on the
     number of hits is not a bound on the tokens they carry. Both are deterministic, and dropping
     for budget is reported rather than silent.
@@ -309,19 +331,19 @@ def recall(
         # a time-ranged answer would date it to whenever the reader happened to look.
         doc_names = []
     for name in doc_names:
-        content = store.read_document(name)
-        if not content:
-            continue
-        for line in content.splitlines():
-            if not line.strip():
-                continue
-            score = _score(line, terms)
-            if score:
-                hits.append(
-                    RecallHit(
-                        source="document", location=name, entry_id=None, text=line.strip(), score=score
-                    )
-                )
+        hits.extend(_line_hits(store.read_document(name), terms, source="document", location=name))
+
+    session_names = store.session_logs() if sessions is None else list(sessions)
+    if since is not None or until is not None:
+        # A session log is free prose with no per-line timestamps, and its id is consumer-chosen,
+        # so the engine cannot date it. Outside every range, like any other undated entry.
+        session_names = []
+    for name in session_names:
+        hits.extend(
+            _line_hits(
+                store.read_session_file(name), terms, source="session", location=f"{SESSIONS_DIR}/{name}"
+            )
+        )
 
     hits.sort(key=lambda h: (-h.score, h.source, h.location, h.entry_id or "", h.text))
     if limit is not None:

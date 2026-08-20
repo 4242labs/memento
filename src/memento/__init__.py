@@ -51,7 +51,7 @@ from .forgetting import (
     rollback_document,
     tombstone,
 )
-from .gates import FieldSpec, Proposal, RuleSet, StoreState, Violation
+from .gates import DocumentBudgetRule, FieldSpec, Proposal, RuleSet, StoreState, Violation
 from .locking import CasClaim, CasClaimRecord, SessionClaim, StoreLock
 from .queue import Queue, RetentionPolicy
 from .readpath import PrefixResult, RecallHit, RecallResult, assemble_prefix, recall
@@ -80,6 +80,7 @@ __all__ = [
     "Clock",
     "CorruptStoreError",
     "Distiller",
+    "DocumentBudgetRule",
     "DocumentWrite",
     "DrainGate",
     "DrainRefused",

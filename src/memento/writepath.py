@@ -12,7 +12,7 @@ anti-erosion floor checkable without parsing markdown back into data.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .errors import GateFailure, MementoError, SecretsDetected, StaleProposal
@@ -145,7 +145,11 @@ def apply_consolidation(
 
     gated_against = current_state(store, adapter)
     try:
-        adapter.rule_set().enforce(gated_against, proposal)
+        # Rules judge what will actually be written. `proposal.documents` is documented as "that
+        # rendering" but arrives as an override map in the standard flow, so a rule reading it —
+        # DocumentBudgetRule, or an adapter's own — would gate an empty dict while the real
+        # projection ships unexamined.
+        adapter.rule_set().enforce(gated_against, replace(proposal, documents=documents))
     except GateFailure as exc:
         sink.raise_flag(GATE_REJECTED, exc.render(), session=session)
         if queue is not None:

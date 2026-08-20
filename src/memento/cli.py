@@ -215,12 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
     _json_arg(p)
     p.set_defaults(func=cmd_forget)
 
-    p = sub.add_parser("recall", help="search events and documents")
+    p = sub.add_parser("recall", help="search events and documents; --sessions adds session logs")
     p.add_argument("query", help="terms to search for; a hit must share one")
     p.add_argument("--limit", type=int, default=10, help="maximum number of hits")
     p.add_argument("--budget", type=int, default=None, help="token ceiling; adapter's if unset")
     p.add_argument("--stream", action="append", default=[], help="restrict to a stream; repeatable")
     p.add_argument("--key", action="append", default=[], help="restrict to an entry id; repeatable")
+    p.add_argument(
+        "--sessions",
+        action="store_true",
+        help="also search the verbatim session logs — 'what happened', not 'what do I know'",
+    )
     p.add_argument("--since", default=None, help="ISO-8601 lower bound on an entry's last-seen time")
     p.add_argument("--until", default=None, help="ISO-8601 upper bound")
     _adapter_args(p)

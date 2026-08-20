@@ -274,3 +274,43 @@ def test_an_event_carries_the_timestamp_the_filters_read(store):
     store.append("vocab/fr", [{"id": "v1", "item": "kites"}], session="s1", batch="b1")
     (hit,) = recall(store, "kites")
     assert hit.ts and hit.ts.endswith("Z")
+
+
+# ------------------------------------------------------------- recall: session logs
+
+
+def test_recall_reads_session_logs_only_when_asked(store):
+    """The distilled store answers "what do I know"; the logs answer "what happened" — verbatim."""
+    store.write_session_log("s1", "We flew kites over the harbour.\n")
+    assert recall(store, "kites") == []
+    hits = recall(store, "kites", sessions=None)
+    assert any(h.source == "session" and h.location == "sessions/log-s1.md" for h in hits)
+
+
+def test_a_chatty_session_log_cannot_evict_curated_hits(seeded):
+    """Line-scored transcript prose would win `limit` on volume; off by default, it never competes."""
+    seeded.write_session_log("s1", "lighthouses\n" * 30)
+    hits = recall(seeded, "lighthouses", limit=5)
+    assert hits and all(h.source != "session" for h in hits)
+
+
+def test_recall_filters_to_named_session_logs(store):
+    store.write_session_log("s1", "kites\n")
+    store.write_session_log("s2", "kites\n")
+    hits = recall(store, "kites", sessions=["log-s2.md"])
+    assert [h.location for h in hits] == ["sessions/log-s2.md"]
+
+
+def test_a_hand_dropped_session_file_is_content_not_a_crash(store):
+    """A filename the id validator would refuse is still searchable; recall never dies on a stray."""
+    (store.root / "sessions").mkdir(parents=True, exist_ok=True)
+    (store.root / "sessions" / "log-my notes.md").write_text("kites\n", encoding="utf-8")
+    hits = recall(store, "kites", sessions=None)
+    assert [h.location for h in hits] == ["sessions/log-my notes.md"]
+
+
+def test_a_date_ranged_recall_leaves_session_logs_out(store):
+    """Free prose with no per-line timestamps, under a consumer-chosen id the engine cannot date."""
+    store.write_session_log("s1", "kites\n")
+    assert recall(store, "kites", sessions=None)
+    assert recall(store, "kites", sessions=None, since="2000-01-01T00:00:00Z") == []

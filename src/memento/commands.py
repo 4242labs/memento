@@ -284,6 +284,7 @@ def cmd_recall(args: argparse.Namespace) -> Outcome:
         args.query,
         limit=args.limit,
         streams=args.stream or None,
+        sessions=None if args.sessions else (),
         keys=args.key or None,
         since=args.since,
         until=args.until,

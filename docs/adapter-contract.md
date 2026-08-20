@@ -224,6 +224,13 @@ Add `Rule` objects via `rules`. A rule is anything with `name` and
 `check(current: StoreState, proposal: Proposal) -> list[Violation]`. They run **after** the floor and
 can only add violations — composition is the only extension point, by design.
 
+One rule ships with the engine, off by default: `DocumentBudgetRule(budget, counter=..., documents=...)`
+rejects a consolidation whose projected documents exceed a token ceiling, pushing curation onto the
+distiller instead of truncation onto the reader. Pass your own `token_counter` so the ceiling is
+counted in the same units as `prefix_budget_tokens`. The write path gates against the full rendered
+projection — `render_documents(facts)` plus the proposal's overrides — so the ceiling covers what
+actually lands on disk. Opt in when the prefix-truncation flag starts firing in practice.
+
 ### Tombstones: how a shrink is allowed
 
 A proposal may carry `tombstones={"languages/it"}`, and the operator's `forget` writes the same
@@ -261,9 +268,10 @@ without it. Use that sparingly; it converts a degraded read into a failed one.
 
 ### Recall
 
-`recall(store, query, limit=...)` searches events and documents. A hit must share a term with the
-query — a query matching nothing returns nothing rather than the nearest thing lying around. Retired
-entries are excluded unless you ask for them.
+`recall(store, query, limit=...)` searches events and documents, and — only when asked — the
+verbatim session logs: the distilled store answers "what do I know", the logs answer "what
+happened". A hit must share a term with the query — a query matching nothing returns nothing rather
+than the nearest thing lying around. Retired entries are excluded unless you ask for them.
 
 Bounded two ways, and they answer different questions. `limit` bounds **how many** hits come back;
 `budget` (with the adapter's `token_counter`, or declared as `recall_budget_tokens`) bounds what
@@ -271,9 +279,12 @@ they **cost**. The second is the one that matters for a consumer pasting hits in
 hits over a long stream is not a bounded amount of text. Truncation cuts the least-relevant end,
 deterministically, and raises a `recall-truncated` FLAG — it is never silent.
 
-Filters narrow what is eligible at all: `streams`, `documents`, `keys`, and `since`/`until` on
-ISO-8601 timestamps. A date-ranged recall searches events only — a projected document is the current
-state with no per-line history, so including it would date it to whenever the reader looked.
+Filters narrow what is eligible at all: `streams`, `documents`, `sessions`, `keys`, and
+`since`/`until` on ISO-8601 timestamps. `sessions` takes filenames as `store.session_logs()` lists
+them and defaults to *none* — transcripts are chatty, and line-scored verbatim prose would evict
+curated hits under `limit` and `budget`; pass `None` for all of them. A date-ranged recall searches
+events only — a projected document is the current state with no per-line history, and a session log
+is free prose the engine cannot date, so including either would misdate the answer.
 
 The archive is never bulk-loaded. If you find yourself calling `recall` with a huge limit to
 assemble context, that belongs in the prefix instead, under the budget.

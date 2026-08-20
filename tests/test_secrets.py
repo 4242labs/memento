@@ -82,3 +82,22 @@ def test_the_gate_fires_before_anything_touches_disk(store, adapter, queue):
     assert store.documents() == []
     assert store.session_logs() == []
     assert queue.pending_sessions()[0].deferrals == 1
+
+
+def test_hostile_unicode_is_refused_at_the_same_door():
+    """Store content is replayed into future prompts; text a human auditor cannot see is refused."""
+    assert "bidi-control" in {m.pattern for m in scan("safe\u202edrowssap")}
+    assert "unicode-tag" in {m.pattern for m in scan("hi\U000E0041\U000E0042")}
+    assert "invisible-unicode" in {m.pattern for m in scan("zero\u200bwidth")}
+    assert "invisible-unicode" in {m.pattern for m in scan("func\u2061call")}
+    assert "invisible-unicode" in {m.pattern for m in scan("mid\ufefffile")}
+    assert "invisible-unicode" in {m.pattern for m in scan("blank\u3164name")}
+
+
+def test_orthography_and_tooling_unicode_is_not_hostile():
+    """ZWJ, ZWNJ, direction marks, bidi isolates and a leading BOM all have legitimate producers."""
+    assert scan("family: \U0001F468\u200d\U0001F469\u200d\U0001F467") == []
+    assert scan("Persian: می\u200cخواهم") == []
+    assert scan("mixed: \u200fعنوان\u200e then Latin") == []
+    assert scan("isolated: \u2067عنوان\u2069") == []
+    assert scan("\ufeff# a BOM-writing editor made this") == []

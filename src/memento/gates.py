@@ -32,7 +32,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
-from .errors import GateFailure
+from .errors import BudgetError, GateFailure
+from .tokenizer import DEFAULT_COUNTER, TokenCounter
 
 # Field names a list member may use to identify itself. An adapter with a different convention
 # declares its own; it may add to this set, never shrink below "something identifies each member".
@@ -450,6 +451,67 @@ class EntrySchemaRule:
                     out.extend(
                         field_violations(spec, entry[key], self.name, f"{where}.{key}")
                     )
+        return out
+
+
+class DocumentBudgetRule:
+    """Reject a consolidation whose projected documents exceed a token ceiling. Adapter opt-in.
+
+    The engine's default answer to an oversized core is deterministic truncation at read time. This
+    rule moves that pressure to write time: the distiller that produced an over-budget projection is
+    refused in full and must curate — merge, prune, tombstone — instead of leaving the reader to
+    cut. Opt in via `Adapter.rules` when the prefix-truncation flag starts firing in practice; the
+    ceiling should sit at or below the share of `prefix_budget_tokens` the documents may spend —
+    and be counted in the same units, so pass the adapter's own `token_counter`.
+
+    The write path gates against the *full rendered projection* — `render_documents(facts)` with
+    the proposal's overrides on top — so what this rule counts is exactly what would land on disk.
+    """
+
+    name = "document-budget"
+
+    def __init__(
+        self,
+        budget: int,
+        *,
+        counter: TokenCounter = DEFAULT_COUNTER,
+        documents: Sequence[str] | None = None,
+    ) -> None:
+        if budget <= 0:
+            raise BudgetError(f"a document budget must be positive, got {budget}")
+        if not getattr(counter, "is_local", False):
+            raise BudgetError(
+                f"token counter {getattr(counter, 'name', counter)!r} is not local; a gate may not "
+                "make a network call to count a proposal"
+            )
+        self.budget = budget
+        self.counter = counter
+        self.documents = tuple(documents) if documents is not None else None
+
+    def check(self, current: StoreState, proposal: Proposal) -> list[Violation]:
+        out: list[Violation] = []
+        if self.documents is not None:
+            # The write path gates the full projection, so a named document that is absent here is
+            # a typo or a renamed renderer output — and a name that never matches is a ceiling that
+            # never applies. A check that silently declines to run reads as a green light.
+            out.extend(
+                Violation(self.name, name, "names a document this consolidation does not project")
+                for name in self.documents
+                if name not in proposal.documents
+            )
+        names = sorted(
+            n for n in proposal.documents if self.documents is None or n in self.documents
+        )
+        total = sum(self.counter.count(proposal.documents[n]) for n in names)
+        if total > self.budget:
+            out.append(
+                Violation(
+                    self.name,
+                    ", ".join(names),
+                    f"projected documents cost {total} tokens against a {self.budget}-token "
+                    "ceiling; merge or tombstone rather than leaving the reader to truncate",
+                )
+            )
         return out
 
 

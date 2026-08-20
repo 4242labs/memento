@@ -291,6 +291,10 @@ Filters: `--stream` and `--key` (both repeatable), `--since` / `--until` on ISO-
 A date-ranged recall searches events only — a projected document is the *current* state and carries
 no per-line history, so including one would date it to whenever you happened to look.
 
+`--sessions` adds the verbatim session logs to the search (hit source `"session"`). Off by default:
+the distilled store answers "what do I know", the logs answer "did we discuss X?" — and transcript
+lines are chatty enough to crowd curated hits out of `--limit` and `--budget` if always included.
+
 ---
 
 ## What an agent does not get

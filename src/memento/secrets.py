@@ -3,6 +3,10 @@
 A write-path gate, not a scanner you run afterwards: content matching a secret pattern is rejected
 before anything lands. Fail closed — a false positive costs one deferred consolidation, a false
 negative puts a live credential in a plain file that a backup may push to a remote.
+
+The same door refuses hostile Unicode. Store content is replayed into future prompts, so text that
+reads differently to a human auditor than to the model — bidi reordering, tag-block smuggling,
+zero-width padding — is a trust-boundary breach, not a formatting quirk.
 """
 
 from __future__ import annotations
@@ -22,6 +26,15 @@ _PATTERNS: tuple[tuple[str, str], ...] = (
     ("bearer-token", r"\bBearer\s+[A-Za-z0-9._-]{24,}\b"),
     ("jwt", r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     ("assigned-secret", r"(?i)\b(api[_-]?key|secret|passwd|password|token)\b\s*[:=]\s*['\"]?[A-Za-z0-9/+_-]{16,}"),
+    # Hostile Unicode. Characters with a real orthographic or tooling use stay admissible, because
+    # a *systematic* false positive makes a store permanently unconsolidatable for the users whose
+    # language needs them: ZWJ (emoji sequences), ZWNJ (Persian), LRM/RLM and the bidi isolates
+    # U+2066–U+2069 (RTL templating), soft hyphen (copied web text), and U+FEFF at offset 0 (an
+    # editor's BOM). The reordering embeds/overrides, the tag block, zero-width padding, and the
+    # blank-rendering Hangul fillers are refused.
+    ("bidi-control", r"[\u202A-\u202E]"),
+    ("unicode-tag", r"[\U000E0000-\U000E007F]"),
+    ("invisible-unicode", r"[\u200B\u2060-\u2064\u180E\u115F\u1160\u3164\uFFA0]|(?<=[\s\S])\uFEFF"),
 )
 
 COMPILED = tuple((name, re.compile(pattern)) for name, pattern in _PATTERNS)

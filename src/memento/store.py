@@ -459,6 +459,23 @@ class MemoryStore:
             return []
         return sorted(p.name for p in directory.glob("log-*.md"))
 
+    def read_session_file(self, name: str) -> str | None:
+        """Read one session log by its filename under `sessions/`, as `session_logs()` lists them.
+
+        Recall iterates the directory listing, so the filename — not a session id — is the handle
+        here. Round-tripping through the id validator made one hand-dropped `log-my notes.md` a
+        crash for every recall over the whole store; a file the engine would not have written is
+        still content, or at worst not ours — never an error. A symlink pointing out of the store
+        reads as absent for the same reason it is not listed.
+        """
+        if "/" in name or "\\" in name or ".." in name:
+            return None
+        try:
+            path = self._resolve(f"{SESSIONS_DIR}/{name}")
+        except MementoError:
+            return None
+        return path.read_text(encoding="utf-8") if path.exists() else None
+
 
 def _reject_secrets(items: Iterable[tuple[str, str]] | Iterator[tuple[str, str]]) -> None:
     """The secrets gate, at the last door before disk.
