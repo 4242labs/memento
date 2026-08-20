@@ -20,9 +20,10 @@ The model *proposes*; deterministic gates *decide*. Five rules follow from that,
 enforced in code rather than asked for in a prompt:
 
 - **Validated writes, all-or-nothing.** An LLM-distilled consolidation is accepted only if it
-  passes every gate: secrets scan, schema, derived identity, and a monotonicity/anti-erosion
-  floor (facts shrink only by explicit tombstone; ordered scales move at most one step).
-  Adapters may tighten the rules, never disable them. On failure nothing is written.
+  passes every gate: secrets and hostile-Unicode scan, schema, derived identity, and a
+  monotonicity/anti-erosion floor (facts shrink only by explicit tombstone; ordered scales
+  move at most one step). Adapters may tighten the rules, never disable them. On failure
+  nothing is written.
 - **Append-only history.** JSONL event logs plus projected markdown documents; status is folded
   at read time, never stored. `forget` writes a tombstone — nothing in this engine deletes an
   event. Document replacements carry the prior content, so every document has history and
@@ -109,6 +110,7 @@ memento --store ./memento rollback profile.md
 memento --store ./memento edit profile.md
 memento --store ./memento forget languages/de --adapter-file ./adapter.json
 memento --store ./memento recall kites --since 2026-07-01T00:00:00Z --budget 400
+memento --store ./memento recall kites --sessions
 memento --store ./memento backup --remote git@github.com:you/private-store.git --yes
 ```
 
