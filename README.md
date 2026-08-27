@@ -151,6 +151,11 @@ coming, some pointed at a road we're still walking toward. Our thanks to their a
 - [MemSyco-Bench: Benchmarking Sycophancy in Agent Memory](https://arxiv.org/abs/2607.01071) —
   Xiang et al., 2026
 
+## Contributors
+
+<!-- contributors:start -->
+<!-- contributors:end -->
+
 ## License
 
 Open source — [AGPL-3.0](LICENSE). Commercial — contact ahoy@42labs.io.
