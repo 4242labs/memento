@@ -16,7 +16,7 @@ dependencies = []
 memento = "memento.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.2", "hatchling>=1.25"]
+dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.6.0", "hatchling>=1.25"]
 
 [build-system]
 requires = ["hatchling"]
@@ -32,7 +32,7 @@ addopts = "-q -m 'not live'"
 markers = ["live: non-gating live-tier tests; require a real model and are skipped by default"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.2", "hatchling>=1.25"]
+dev = ["pytest>=8.0", "mutmut>=3.0", "build>=1.6.0", "hatchling>=1.25"]
 
 [tool.mutmut]
 # Mutation testing is how "the tests are green" becomes evidence rather than a claim: it breaks the
