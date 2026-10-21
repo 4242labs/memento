@@ -22,7 +22,7 @@ jobs:
       matrix:
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -41,7 +41,7 @@ jobs:
     # Public repo. Synthetic fixtures only, and this is what keeps that true.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -74,7 +74,7 @@ jobs:
     # A store is data, never code. If one ever lands in this repo, it lands in public.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Refuse a committed store
         run: |
